@@ -1,0 +1,12 @@
+{
+  "name": "clever-ua-rotate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lança o Chrome com User-Agent sorteado para testar a tag Clever",
+  "scripts": {
+    "ua": "node ua-rotate.js"
+  },
+  "dependencies": {
+    "puppeteer": "^24.0.0"
+  }
+}

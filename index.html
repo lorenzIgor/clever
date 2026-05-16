@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clever Core — teste de tag</title>
+  <script>
+    // Callback chamado pelo Clever Core quando a tag carrega/serve.
+    function cleverCoreCallback(data) {
+      console.log('[clever] callback:', data);
+      var el = document.getElementById('status');
+      if (el) {
+        el.textContent = 'Callback disparado: ' + JSON.stringify(data);
+        el.style.color = 'green';
+      }
+    }
+  </script>
+</head>
+<body>
+  <h1>Página de teste — Clever Core</h1>
+  <p>Hostname atual: <code id="host"></code></p>
+  <p>Abra o DevTools &rarr; aba <b>Network</b> e filtre por <code>cleverwebserver.com</code>.</p>
+  <p id="status" style="color:#888">Aguardando o Clever Core&hellip;</p>
+  <script>document.getElementById('host').textContent = location.host;</script>
+
+  <!-- ===== Alvo onde o banner Clever Core deve aparecer ===== -->
+  <h2>Banner:</h2>
+  <div class="clever-core-ads"></div>
+
+  <!-- ===== Tag Clever Core (original, só o data-callback foi preenchido) ===== -->
+  <script data-cfasync="false" type="text/javascript" id="clever-core">
+  /* <![CDATA[ */
+      (function (document, window) {
+          var a, c = document.createElement("script"), f = window.frameElement;
+
+          c.id = "CleverCoreLoader103461";
+          c.src = "https://scripts.cleverwebserver.com/83697330594d1e8aade23cc07e4bd4a9.js";
+
+          c.async = !0;
+          c.type = "text/javascript";
+          c.setAttribute("data-target", window.name || (f && f.getAttribute("id")));
+          c.setAttribute("data-callback", "cleverCoreCallback");
+          c.setAttribute("data-callback-url-click", "put-your-click-macro-here");
+          c.setAttribute("data-callback-url-view", "put-your-view-macro-here");
+
+          try {
+              a = parent.document.getElementsByTagName("script")[0] || document.getElementsByTagName("script")[0];
+          } catch (e) {
+              a = !1;
+          }
+
+          a || (a = document.getElementsByTagName("head")[0] || document.getElementsByTagName("body")[0]);
+          a.parentNode.insertBefore(c, a);
+      })(document, window);
+  /* ]]> */
+  </script>
+</body>
+</html>

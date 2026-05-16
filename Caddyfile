@@ -1,0 +1,19 @@
+# GERADO por run.py a partir de domains.json -- nao edite a mao.
+{
+	log {
+		level ERROR
+	}
+}
+
+games.op.gg,
+www.ffonts.net,
+sport.sky.de,
+deadspin.com,
+lakersnation.com,
+bloodyelbow.com,
+sport.ch,
+sport.quotidiano.net,
+amenteemaravilhosa.com.br {
+	tls internal
+	reverse_proxy 127.0.0.1:8787
+}
