@@ -9,6 +9,22 @@ const zlib = require('zlib');
 const PORT = 8787;
 const DEFAULT_HOST = 'games.op.gg'; // fallback se a request não trouxer Host
 
+// dns.resolve4 (c-ares) usa o servidor DNS configurado no SO. Em máquinas cujo
+// DNS é instável ou bloqueado, a resolução do site real falha e o proxy devolve
+// "502 Falha de DNS". Fixamos um DNS público para não depender da configuração
+// da máquina. Override: env DNS_SERVERS="1.1.1.1,8.8.8.8" (vazio = usa o do SO).
+const DNS_SERVERS = (process.env.DNS_SERVERS === undefined
+  ? '1.1.1.1,1.0.0.1,8.8.8.8'
+  : process.env.DNS_SERVERS).split(',').map((s) => s.trim()).filter(Boolean);
+if (DNS_SERVERS.length) {
+  try {
+    require('dns').setServers(DNS_SERVERS);
+    console.log('DNS do proxy fixado em: ' + DNS_SERVERS.join(', '));
+  } catch (e) {
+    console.warn('nao consegui fixar o DNS (' + e.message + ') -- usando o do SO');
+  }
+}
+
 // A div alvo do banner Clever (entra como primeiro nó dentro do <body>).
 // Flutuante (position:fixed) em 0,0 e com z-index máximo (2147483647 = maior
 // int de 32 bits) para ficar acima de todo o conteúdo do site.

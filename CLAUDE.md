@@ -126,6 +126,12 @@ Foi o caso do `whoscored.com`, removido da lista.
   pode disparar o beacon mais de uma vez — aceitável em teste.
 - **`dns.resolve4`, não `dns.lookup`.** `lookup` consulta o `/etc/hosts` e
   cairia em loop (domínio → 127.0.0.1 → Caddy → proxy → ...).
+- **DNS da máquina instável → `502 Falha de DNS` no navegador.** O `proxy.js`
+  resolve o site real via `dns.resolve4` (c-ares), que usa o servidor DNS do
+  SO. Se esse DNS estiver ruim/bloqueado, a resolução falha e o proxy devolve
+  um 502 — o navegador mostra "problema de DNS". Por isso o `proxy.js` fixa um
+  DNS público no boot (`dns.setServers`, padrão `1.1.1.1,1.0.0.1,8.8.8.8`).
+  Override pela env `DNS_SERVERS` (vazia = volta a usar o DNS do SO).
 - **Renderizar ≠ contabilizar.** A contagem no dashboard Clever depende de:
   domínio registrado na conta Clever, viewability (banner visível, aba focada
   ~1s contínuo) e um delay de processamento no primeiro acesso.

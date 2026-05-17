@@ -131,15 +131,24 @@ Digite a linha abaixo e aperte **Enter**:
 .\watchdog.ps1
 ```
 
-> **Se aparecer um erro vermelho** dizendo que a execução de scripts está
-> desabilitada, rode **uma vez** o comando abaixo e depois tente o
-> `.\watchdog.ps1` de novo:
+> **Se aparecer um erro vermelho**, ele costuma ser de um destes dois tipos —
+> rode o comando correspondente **uma vez** e tente o `.\watchdog.ps1` de novo:
 >
-> ```
-> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-> ```
+> 1. Erro dizendo que **a execução de scripts está desabilitada**:
 >
-> (digite `S` e Enter se ele perguntar)
+>    ```
+>    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+>    ```
+>
+>    (digite `S` e Enter se ele perguntar)
+>
+> 2. Erro dizendo que o arquivo **"não está assinado digitalmente"** — acontece
+>    quando o projeto foi baixado como ZIP do GitHub (o Windows marca os
+>    arquivos como vindos da internet). Destrave a pasta inteira com:
+>
+>    ```
+>    Get-ChildItem -Recurse | Unblock-File
+>    ```
 
 Pronto! O sistema vai subir e, em alguns segundos, **janelas do Chrome vão
 abrir sozinhas** com os sites e os anúncios. Pode deixar o computador ligado e
@@ -175,6 +184,8 @@ Você pode passar uma palavra depois do comando, conforme a necessidade:
 | `dependências não instaladas`                       | Você pulou o Passo 6 — rode `npm install` na pasta do projeto.                |
 | `porta 443 ocupada` / `caddy não subiu`             | Confirme que abriu o PowerShell **como Administrador** (Passo 7.1).           |
 | Erro vermelho sobre "scripts desabilitados"         | Rode o comando `Set-ExecutionPolicy` indicado no Passo 7.3.                   |
+| Erro de "não está assinado digitalmente"            | Rode `Get-ChildItem -Recurse \| Unblock-File` (Passo 7.3).                    |
+| Chrome mostra erro de DNS / `502 Falha de DNS`      | O proxy já fixa o DNS `1.1.1.1`. Se persistir, troque o DNS do Windows para `1.1.1.1` (Configurações → Rede → DNS). |
 | Os anúncios não aparecem                            | Confirme que está usando o **Chrome** (não o Brave).                          |
 
 Se o watchdog mostrar mensagens amarelas dizendo que o `run.py` saiu e está
