@@ -47,17 +47,28 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
 - **`index.html`** — página de teste standalone (legado, dos primeiros testes).
   Não é usada no modo proxy, onde o Caddy repassa tudo.
 - **`ua-rotate.js`** — abre `WINDOW_COUNT` janelas do Chrome (Puppeteer), uma
-  por slot do grid de `DISPLAYS`. Cada janela percorre os domínios
-  (`domains.json`) em ordem aleatória, recarregando para o próximo a cada 5-10s
-  (`RELOAD_MIN_S`/`RELOAD_MAX_S`); a cada reload troca o perfil de User-Agent
-  (round-robin, `PROFILES`), alinhando header `User-Agent` + Client Hints
-  (`Sec-CH-UA*`) + `navigator.userAgentData` via `setUserAgent(ua, metadata)`.
-  Cada janela é supervisionada: se o Chrome travar/cair, é relançada sozinha.
-  `package.json` + `puppeteer.config.cjs` (usa o Chrome instalado).
+  por slot do grid de `DISPLAYS`. Cada janela **relança um Chrome novo a cada
+  5-10s** (`RELOAD_MIN_S`/`RELOAD_MAX_S`) num domínio aleatório de
+  `domains.json` — a cada ciclo o navegador sobe limpo, sem estado do anterior
+  (não é `reload` da mesma aba, é fechar e reabrir). A cada relançamento troca o
+  perfil de User-Agent (round-robin, `PROFILES`), alinhando header `User-Agent`
+  + Client Hints (`Sec-CH-UA*`) + `navigator.userAgentData` via
+  `setUserAgent(ua, metadata)`. Se o Chrome travar/cair, o ciclo só reinicia
+  antes. `package.json` + `puppeteer.config.cjs` (usa o Chrome instalado).
 - **`run.py`** — orquestrador cross-platform (Python, só stdlib; macOS/Windows/
   Linux). Num comando: garante os domínios no arquivo hosts, gera o `Caddyfile`,
   limpa o DNS, sobe `proxy.js` + `caddy` + `ua-rotate.js` e derruba tudo na
   ordem no Ctrl+C. Precisa rodar elevado (`sudo` / Administrador).
+- **`watchdog.ps1`** — watchdog do `run.py` no Windows (PowerShell, só roda
+  elevado). Loop infinito: roda `python run.py`, espera ele sair e o relança.
+  Funciona porque o `run.py` já encerra sozinho de forma limpa quando um filho
+  cai (detecta o processo morto, retorna e o `shutdown()` derruba tudo na
+  ordem). Antes de relançar dá `caddy stop` para liberar a porta 443 de um
+  caddy órfão. Ctrl+C encerra o watchdog junto com o `run.py`; há ainda uma
+  janela de 5s (`RESTART_DELAY`) após cada saída para cancelar com Ctrl+C, para
+  não confundir parada intencional com crash. Argumentos são repassados ao
+  `run.py`. Não usar Serviço do Windows aqui: serviço roda na sessão 0, sem
+  desktop, e as janelas do Chrome do `ua-rotate.js` não apareceriam.
 
 ## Como rodar
 
@@ -75,12 +86,14 @@ sudo python3 run.py win        # filtra os perfis de UA por "win"
 ```powershell
 # Windows — abrir o Terminal/PowerShell COMO ADMINISTRADOR
 python run.py
+.\watchdog.ps1            # roda o run.py e o relança sozinho se cair
+.\watchdog.ps1 static     # argumentos são repassados ao run.py
 ```
 
 O `run.py` faz tudo: arquivo hosts, gera o `Caddyfile`, flush de DNS, sobe
 `proxy.js` + `caddy` + `ua-rotate.js`. Ctrl+C derruba tudo na ordem. O terminal
 do proxy loga cada request e a linha `[html] ... injetado=true`; o
-`ua-rotate.js` loga `[janela N] domínio · perfil` a cada reload.
+`ua-rotate.js` loga `[janela N] domínio · perfil` a cada relançamento.
 
 Ajustes: env `RELOAD_MIN_S`/`RELOAD_MAX_S` (padrão 5/10s) e a const `DISPLAYS`
 no `ua-rotate.js` (telas: origem/tamanho/colunas/quantas janelas).

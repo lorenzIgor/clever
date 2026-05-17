@@ -1,11 +1,12 @@
 'use strict';
 // ua-rotate.js — abre N janelas do Chrome (uma por slot do grid das telas).
 //
-// Cada janela percorre os domínios em ordem ALEATÓRIA (embaralha a lista e vai
-// recarregando para o próximo a cada 5-10s; ao terminar, reembaralha). A cada
-// reload troca também o perfil de User-Agent (round-robin, com offset por
-// janela). Cada janela é supervisionada: se o Chrome travar ou cair, ela é
-// relançada sozinha. Roda até Ctrl+C — ou SIGINT vindo do run.py.
+// Cada janela RELANÇA um Chrome novo a cada 5-10s, num domínio aleatório
+// (embaralha a lista e consome um por ciclo; ao terminar, reembaralha): a cada
+// ciclo o navegador sobe limpo, sem estado do anterior. A cada relançamento
+// troca também o perfil de User-Agent (round-robin, com offset por janela). Se
+// o Chrome travar ou cair, o ciclo só reinicia antes. Roda até Ctrl+C — ou
+// SIGINT vindo do run.py.
 //
 // A troca de agente é no navegador porque os requests para a Clever
 // (scripts.cleverwebserver.com, beacon Pixel.gif) saem direto do navegador. O
@@ -29,27 +30,67 @@ const ARGS = process.argv.slice(2);
 const STATIC = ARGS.includes('static');
 const PROFILE_ARG = ARGS.find((a) => a !== 'static');
 
+// --- ESCALA / ZOOM -----------------------------------------------------------
+// SCALE vai para o Chrome em --force-device-scale-factor: é o "zoom" de TUDO
+// (UI do Chrome + conteúdo da página). Menor = tudo renderiza menor, então cabe
+// mais janela na tela.   1 = 100%   0.5 = 50% (metade do tamanho)
+// O Chrome posiciona/dimensiona janelas em pixels LÓGICOS (DIPs); com SCALE
+// forçado, a área lógica da tela = resolução NATIVA / SCALE. Por isso DISPLAYS
+// declara a resolução nativa e o slotFor divide por SCALE — o grid continua
+// certo em qualquer zoom.
+const SCALE = 0.5;
+
 // --- TELAS -------------------------------------------------------------------
 // Distribuição das janelas entre as telas. `x`/`y` é a origem da tela no espaço
-// global do SO: a tela principal começa em (0,0); telas estendidas ficam ao
-// lado conforme o arranjo nas configurações de vídeo (macOS: Ajustes > Telas;
+// lógico (DIP) do SO: a tela principal começa em (0,0); telas estendidas ficam
+// ao lado conforme o arranjo nas configurações de vídeo (macOS: Ajustes > Telas;
 // Windows: Configurações > Sistema > Tela). Tela à esquerda da principal usa
-// `x` negativo; acima, `y` negativo. `cols` = colunas do grid; `count` =
+// `x` negativo; acima, `y` negativo. `wNative`/`hNative` = resolução NATIVA da
+// tela em pixels (ex.: 4K = 3840x2160). `cols` = colunas do grid; `count` =
 // quantas janelas vão nessa tela.
 //
-// ATENÇÃO: cada janela é um Chrome inteiro. ~6 janelas é o limite seguro de um
-// MacBook 14" — acima disso a CPU/memória esgotam e até trocar o User-Agent dá
-// timeout. Numa máquina mais potente dá para subir os `count`; ajuste estes
-// valores para o SEU monitor/arranjo e observe o terminal.
+// ATENÇÃO: cada janela é um Chrome inteiro — baixar o SCALE faz mais janelas
+// CABEREM na tela, mas NÃO reduz o custo: cada janela continua um processo
+// inteiro. ~6 janelas é o limite de um MacBook 14"; numa máquina potente dá
+// para subir o `count`, mas aos poucos, observando CPU/memória no terminal.
 const DISPLAYS = [
-  { name: 'MacBook 14"', x: 0,    y: 0, w: 1512, h: 982,  cols: 2, count: 4 },
-  { name: 'iPad 12.9"',  x: 1512, y: 0, w: 1366, h: 1024, cols: 2, count: 2 },
+  { name: '4K 32"', x: 0, y: 0, wNative: 3840, hNative: 2160, cols: 4, count: 16 },
 ];
 const WINDOW_COUNT = DISPLAYS.reduce((s, d) => s + d.count, 0);
 
 // Domínios alvo — fonte única em domains.json. O run.py lê o mesmo arquivo
 // para o hosts e para gerar o Caddyfile.
 const DOMAINS = require('./domains.json');
+
+// --- PROXIES (IP de saída por janela) ----------------------------------------
+// Pool de proxies residenciais: cada janela usa PROXIES[windowIndex % len] —
+// ou seja, UM IP POR JANELA, fazendo cada janela parecer um usuário distinto.
+// Lista vazia = sem proxy (o Chrome sai pelo IP da máquina).
+//
+// Formato de cada item:
+//   { server: 'host:porta', username: 'user', password: 'senha' }
+// username/password são opcionais (proxy sem autenticação omite os dois).
+// server aceita prefixo de esquema: 'http://host:porta' ou 'socks5://host:porta'
+// (sem prefixo o Chrome assume HTTP).
+// TODO: preencher com os endpoints do provedor de proxy residencial brasileiro.
+//   Ex.: { server: 'br.provedor.com:8000', username: 'user', password: 'senha' }
+// Lista vazia = sem proxy (o Chrome sai pelo IP da máquina).
+const PROXIES = [];
+
+// Os domínios alvo estão no arquivo hosts apontando para o Caddy local. Eles
+// PRECISAM sair do proxy (--proxy-bypass-list): senão o Chrome mandaria esses
+// hosts pelo proxy, que resolveria o IP público real e serviria o site REAL
+// SEM a injeção da tag Clever. Só o resto (Clever, CDNs) vai pelo proxy.
+const PROXY_BYPASS = DOMAINS.join(';');
+
+// monta os args de proxy do Chrome para uma janela (vazio = sem proxy).
+function proxyArgs(proxy) {
+  if (!proxy || !proxy.server) return [];
+  return [
+    `--proxy-server=${proxy.server}`,
+    `--proxy-bypass-list=${PROXY_BYPASS}`,
+  ];
+}
 
 // Brand "greasado" que o Chrome injeta nos Client Hints.
 const GREASE = { brand: 'Not)A;Brand', version: '99', full: '99.0.0.0' };
@@ -116,9 +157,13 @@ function slotFor(windowIndex) {
   let i = windowIndex;
   for (const d of DISPLAYS) {
     if (i < d.count) {
+      // área lógica (DIP) = resolução nativa / SCALE — é nela que o Chrome
+      // posiciona e dimensiona as janelas.
+      const logW = d.wNative / SCALE;
+      const logH = d.hNative / SCALE;
       const rows = Math.ceil(d.count / d.cols);
-      const winW = Math.floor(d.w / d.cols);
-      const winH = Math.floor(d.h / rows);
+      const winW = Math.floor(logW / d.cols);
+      const winH = Math.floor(logH / rows);
       const col = i % d.cols;
       const row = Math.floor(i / d.cols);
       return { x: d.x + col * winW, y: d.y + row * winH, w: winW, h: winH };
@@ -173,7 +218,7 @@ async function closeAll() {
   await Promise.all(bs.map((b) => b.close().catch(() => {})));
 }
 
-function launchAt(slot) {
+function launchAt(slot, proxy) {
   return puppeteer.launch({
     headless: false,
     channel: 'chrome',          // usa o Chrome instalado
@@ -183,8 +228,11 @@ function launchAt(slot) {
     ignoreDefaultArgs: ['--enable-automation'], // tira a infobar de automação
     args: [
       '--disable-blink-features=AutomationControlled',
+      `--force-device-scale-factor=${SCALE}`,  // "zoom" global (UI + página)
+      '--high-dpi-support=1',
       `--window-position=${slot.x},${slot.y}`,
       `--window-size=${slot.w},${slot.h}`,
+      ...proxyArgs(proxy),
     ],
   });
 }
@@ -192,58 +240,67 @@ function launchAt(slot) {
 // erros que indicam Chrome/aba mortos ou travados — exigem relançar a janela.
 const DEAD_RE = /Target closed|Session closed|detached|crash|disconnected|travou|Connection closed|Protocol error/i;
 
-// Supervisiona uma janela: navega em loop e, se o Chrome travar ou cair
-// (renderer crash, falta de memória etc.), relança a janela e continua.
+// Supervisiona uma janela: a cada ciclo lança um Chrome NOVO num domínio
+// aleatório, espera 5-10s e fecha — em seguida relança do zero. Cada ciclo é
+// um navegador "limpo", sem estado do anterior. Crash/travamento só encurta o
+// ciclo (o relançamento já é o comportamento normal).
 async function runWindow(windowIndex, profiles) {
   const slot = slotFor(windowIndex);
+  // um IP por janela: PROXIES[windowIndex % len]. Sem proxies -> null.
+  const proxy = PROXIES.length ? PROXIES[windowIndex % PROXIES.length] : null;
+  const via = proxy ? `  ·  ${proxy.server}` : '';
   const tag = `janela ${windowIndex + 1}`;
   let uaIdx = windowIndex % profiles.length; // cada janela começa num UA diferente
   let queue = [];
 
   while (!stopping) {
+    if (queue.length === 0) queue = shuffled(DOMAINS);
+    const domain = queue.shift();
+    const profile = profiles[uaIdx % profiles.length];
+    uaIdx++;
+
     let browser = null;
     let alive = false;
+    let crashed = false;
     try {
-      browser = await launchAt(slot);
+      browser = await launchAt(slot, proxy);
       browsers.add(browser);
       alive = true;
       browser.on('disconnected', () => { alive = false; });
 
       const page = (await browser.pages())[0] || (await browser.newPage());
+      // proxy com autenticação: o --proxy-server do Chrome não aceita
+      // user:senha embutidos; o Puppeteer responde ao desafio 407.
+      if (proxy && proxy.username) {
+        await page.authenticate({ username: proxy.username, password: proxy.password });
+      }
       await page.evaluateOnNewDocument(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       });
       // Aceita diálogos JS — inclusive o "beforeunload" que sites de notícia/
-      // anúncio registram. Sem tratar, o Puppeteer descarta o beforeunload, o
-      // que CANCELA a navegação e a janela não recarrega.
+      // anúncio registram, que poderia travar o fechamento da janela.
       page.on('dialog', (dialog) => { dialog.accept().catch(() => {}); });
 
-      while (!stopping && alive) {
-        if (queue.length === 0) queue = shuffled(DOMAINS);
-        const domain = queue.shift();
-        const profile = profiles[uaIdx % profiles.length];
-        uaIdx++;
-        try {
-          // setUserAgent ANTES do goto: alinha header + Client Hints + userAgentData.
-          await withTimeout(page.setUserAgent(profile.ua, profile.metadata), 20000, 'setUserAgent');
-          await page.goto(`https://${domain}/`, { waitUntil: 'domcontentloaded', timeout: 25000 });
-          console.log(`[${tag}] ${domain}  ·  ${profile.id}`);
-        } catch (e) {
-          if (stopping || !alive) break;
-          console.warn(`[${tag}] ${domain}: ${e.message}`);
-          if (DEAD_RE.test(e.message)) break; // Chrome morreu/travou -> relança
-        }
-        if (STATIC) {
-          // modo clique: fica parado nesse domínio até o Ctrl+C.
-          while (!stopping && alive) await sleep(1000);
-          break;
-        }
-        // espera 5-10s em passos de 1s para reagir rápido ao Ctrl+C.
+      // setUserAgent ANTES do goto: alinha header + Client Hints + userAgentData.
+      await withTimeout(page.setUserAgent(profile.ua, profile.metadata), 20000, 'setUserAgent');
+      await page.goto(`https://${domain}/`, { waitUntil: 'domcontentloaded', timeout: 25000 });
+      console.log(`[${tag}] ${domain}  ·  ${profile.id}${via}`);
+
+      if (STATIC) {
+        // modo clique: fica parado nesse domínio até o Ctrl+C.
+        while (!stopping && alive) await sleep(1000);
+      } else {
+        // mantém a janela 5-10s (passos de 1s p/ reagir rápido ao Ctrl+C) e
+        // então o finally a fecha; o while externo relança um Chrome novo.
         const secs = randInt(RELOAD_MIN, RELOAD_MAX);
         for (let t = 0; t < secs && !stopping && alive; t++) await sleep(1000);
       }
+      // 'alive' só é falso aqui se o Chrome caiu durante o ciclo (o
+      // disconnected do nosso próprio close() no finally vem depois deste ponto).
+      if (!alive) crashed = true;
     } catch (e) {
-      console.warn(`[${tag}] falha: ${e.message}`);
+      console.warn(`[${tag}] ${domain}: ${e.message}`);
+      crashed = DEAD_RE.test(e.message); // travou/morreu -> backoff antes de relançar
     } finally {
       if (browser) {
         browsers.delete(browser);
@@ -251,8 +308,8 @@ async function runWindow(windowIndex, profiles) {
       }
     }
     if (stopping || STATIC) break;
-    console.warn(`[${tag}] relançando...`);
-    for (let t = 0; t < 3 && !stopping; t++) await sleep(1000);
+    // backoff curto só depois de crash/travamento, para não martelar.
+    if (crashed) for (let t = 0; t < 3 && !stopping; t++) await sleep(1000);
   }
 }
 
@@ -262,7 +319,12 @@ async function main() {
     + (STATIC ? ' · modo STATIC (sem reload — para testar clique)'
               : ` · reload ${RELOAD_MIN}-${RELOAD_MAX}s, ordem aleatória`)
     + ` · UA round-robin (${profiles.length} perfis)`);
-  console.log('Telas: ' + DISPLAYS.map((d) => `${d.name} ${d.count}j`).join(' · '));
+  console.log('Telas: ' + DISPLAYS.map((d) => `${d.name} ${d.count}j`).join(' · ')
+    + ` · zoom ${Math.round(SCALE * 100)}%`);
+  console.log(PROXIES.length
+    ? `Proxies: ${PROXIES.length} (1 IP por janela, round-robin) · `
+      + PROXIES.map((p) => p.server).join(', ')
+    : 'Proxies: nenhum (Chrome sai pelo IP da máquina)');
 
   const shutdown = async () => {
     if (stopping) process.exit(1); // segundo sinal: sai na marra
