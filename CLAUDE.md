@@ -35,8 +35,9 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
 ## Arquivos
 
 - **`proxy.js`** — proxy reverso de injeção (Node, sem dependências externas).
-  Genérico: atende qualquer domínio pelo header `Host`. Resolve o IP real com
-  `dns.resolve4` (ignora `/etc/hosts`, evita loop), remove
+  Genérico: atende qualquer domínio pelo header `Host`. Resolve o IP real via
+  DNS-over-HTTPS (Cloudflare, porta 443; fallback `dns.resolve4`) — ignora o
+  `/etc/hosts`, evita loop —, remove
   `content-security-policy`/`strict-transport-security`/`x-frame-options`. A div
   Clever entra como primeiro nó dentro do `<body>` (`BODY_OPEN_RE`), flutuante
   (`position:fixed`, 0,0, z-index máximo); o loader vai no fim do `<body>`.
@@ -126,12 +127,14 @@ Foi o caso do `whoscored.com`, removido da lista.
   pode disparar o beacon mais de uma vez — aceitável em teste.
 - **`dns.resolve4`, não `dns.lookup`.** `lookup` consulta o `/etc/hosts` e
   cairia em loop (domínio → 127.0.0.1 → Caddy → proxy → ...).
-- **DNS da máquina instável → `502 Falha de DNS` no navegador.** O `proxy.js`
-  resolve o site real via `dns.resolve4` (c-ares), que usa o servidor DNS do
-  SO. Se esse DNS estiver ruim/bloqueado, a resolução falha e o proxy devolve
-  um 502 — o navegador mostra "problema de DNS". Por isso o `proxy.js` fixa um
-  DNS público no boot (`dns.setServers`, padrão `1.1.1.1,1.0.0.1,8.8.8.8`).
-  Override pela env `DNS_SERVERS` (vazia = volta a usar o DNS do SO).
+- **DNS da máquina instável → `502 Falha de DNS` no navegador.** O `dns.resolve4`
+  (c-ares) depende do DNS do SO e faz consulta crua na porta 53 — que muitas
+  redes bloqueiam ou apontam para um resolvedor local inexistente (`queryA
+  ECONNREFUSED`). Por isso o `proxy.js` resolve o IP do site via **DNS-over-HTTPS**
+  (Cloudflare `https://1.1.1.1/dns-query`, porta 443): não depende do DNS da
+  máquina nem da porta 53. Se o DoH falhar, cai no `dns.resolve4` — que usa os
+  servidores da env `DNS_SERVERS` (padrão `1.1.1.1,1.0.0.1,8.8.8.8`; vazia = DNS
+  do SO).
 - **Renderizar ≠ contabilizar.** A contagem no dashboard Clever depende de:
   domínio registrado na conta Clever, viewability (banner visível, aba focada
   ~1s contínuo) e um delay de processamento no primeiro acesso.

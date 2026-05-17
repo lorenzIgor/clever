@@ -9,10 +9,9 @@ const zlib = require('zlib');
 const PORT = 8787;
 const DEFAULT_HOST = 'games.op.gg'; // fallback se a request não trouxer Host
 
-// dns.resolve4 (c-ares) usa o servidor DNS configurado no SO. Em máquinas cujo
-// DNS é instável ou bloqueado, a resolução do site real falha e o proxy devolve
-// "502 Falha de DNS". Fixamos um DNS público para não depender da configuração
-// da máquina. Override: env DNS_SERVERS="1.1.1.1,8.8.8.8" (vazio = usa o do SO).
+// Fallback de DNS: se o DoH (abaixo) falhar, a resolução cai no dns.resolve4
+// (c-ares), que usa estes servidores. Override: env DNS_SERVERS="1.1.1.1,8.8.8.8"
+// (vazio = usa o DNS do SO).
 const DNS_SERVERS = (process.env.DNS_SERVERS === undefined
   ? '1.1.1.1,1.0.0.1,8.8.8.8'
   : process.env.DNS_SERVERS).split(',').map((s) => s.trim()).filter(Boolean);
@@ -103,14 +102,55 @@ function injectHtml(html) {
   return html;
 }
 
-// dns.resolve4 consulta o DNS de verdade e IGNORA o /etc/hosts,
-// entao nao cai no loop (dominio -> 127.0.0.1 -> Caddy).
+// Resolução do IP real do site. O dns.resolve4 (c-ares) depende do DNS do SO e
+// faz consulta crua na porta 53 -- que muitas redes bloqueiam ou apontam para um
+// resolvedor local inexistente (queryA ECONNREFUSED). Resolvemos via
+// DNS-over-HTTPS (Cloudflare, porta 443, igual a do HTTPS comum): não depende do
+// DNS da máquina nem da porta 53. Se o DoH falhar, cai no resolvedor do SO.
+// Em ambos os casos ignora o /etc/hosts -- não cai no loop (domínio ->
+// 127.0.0.1 -> Caddy -> proxy).
 const ipCache = new Map();
+
+// DNS-over-HTTPS pela API JSON do Cloudflare (https://1.1.1.1/dns-query).
+function resolveDoH(host) {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      host: '1.1.1.1',
+      port: 443,
+      path: '/dns-query?type=A&name=' + encodeURIComponent(host),
+      headers: { accept: 'application/dns-json' },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (d) => chunks.push(d));
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const a = (data.Answer || []).find((x) => x.type === 1); // 1 = registro A
+          if (a && a.data) resolve(a.data);
+          else reject(new Error('DoH sem registro A para ' + host));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.setTimeout(8000, () => req.destroy(new Error('timeout no DoH')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 async function realIp(host) {
   if (ipCache.has(host)) return ipCache.get(host);
-  const ips = await dns.resolve4(host);
-  ipCache.set(host, ips[0]);
-  return ips[0];
+  let ip;
+  try {
+    ip = await resolveDoH(host);
+  } catch (e) {
+    // DoH indisponível: última tentativa pelo resolvedor do SO (porta 53).
+    const ips = await dns.resolve4(host);
+    ip = ips[0];
+  }
+  ipCache.set(host, ip);
+  return ip;
 }
 
 function decompress(buf, enc) {
