@@ -14,9 +14,17 @@
 // header HTTP `User-Agent`, Client Hints (`Sec-CH-UA*`) e `navigator.userAgentData`.
 //
 // Normalmente é iniciado pelo run.py. Direto: node ua-rotate.js [opções]
-//   - "static": carrega um domínio por janela e NÃO recarrega — para testar
-//               o clique com calma, sem a página trocar embaixo de você.
-//   - qualquer outra palavra: filtro de perfil de UA (ex.: "win").
+//   static                      carrega 1 domínio por janela e NÃO recarrega
+//                                (para testar o clique com calma).
+//   -w <px> -h <px>             resolução NATIVA da tela (padrão 3840x2160).
+//   -cols <n>                   colunas do grid de janelas (padrão 4).
+//   -count <n>                  quantas janelas abrir (padrão 16).
+//   -scale <f>                  zoom global do Chrome (padrão 0.5 = 50%).
+//   -platform win|mac|all       filtra o SO dos perfis DESKTOP (padrão all).
+//   -device desktop|mobile|all  classes de dispositivo a entregar (padrão desktop).
+//   -device_mode random|N:M     proporção desktop:mobile p/ -device all
+//                                (padrão random = 50:50; ex.: 60:40).
+// Sem flags = comportamento padrão das constantes abaixo (desktop, 4K, 16 janelas).
 //
 // Ajustes por env var (com padrões): RELOAD_MIN_S=5  RELOAD_MAX_S=10
 
@@ -25,10 +33,24 @@ const puppeteer = require('puppeteer');
 const RELOAD_MIN = Number(process.env.RELOAD_MIN_S || 5);
 const RELOAD_MAX = Number(process.env.RELOAD_MAX_S || 10);
 
-// argumentos da linha de comando
+// --- argumentos da linha de comando -----------------------------------------
+// Veja o cabeçalho do arquivo para a lista de flags. Flags ausentes caem nos
+// padrões; o run.py e o watchdog.ps1 repassam tal e qual o que recebem p/ cá.
 const ARGS = process.argv.slice(2);
 const STATIC = ARGS.includes('static');
-const PROFILE_ARG = ARGS.find((a) => a !== 'static');
+
+// valor que segue uma flag (ex.: flagValue('-cols') em "-cols 4" -> "4").
+function flagValue(name) {
+  const i = ARGS.indexOf(name);
+  return i >= 0 && i + 1 < ARGS.length ? ARGS[i + 1] : null;
+}
+// flag numérica positiva, com fallback para o padrão se ausente/inválida.
+function numFlag(name, def) {
+  const v = flagValue(name);
+  if (v == null) return def;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
 
 // --- ESCALA / ZOOM -----------------------------------------------------------
 // SCALE vai para o Chrome em --force-device-scale-factor: é o "zoom" de TUDO
@@ -38,7 +60,7 @@ const PROFILE_ARG = ARGS.find((a) => a !== 'static');
 // forçado, a área lógica da tela = resolução NATIVA / SCALE. Por isso DISPLAYS
 // declara a resolução nativa e o slotFor divide por SCALE — o grid continua
 // certo em qualquer zoom.
-const SCALE = 0.5;
+const SCALE = numFlag('-scale', 0.5);  // padrão 0.5; a flag -scale sobrepõe
 
 // --- TELAS -------------------------------------------------------------------
 // Distribuição das janelas entre as telas. `x`/`y` é a origem da tela no espaço
@@ -53,9 +75,23 @@ const SCALE = 0.5;
 // CABEREM na tela, mas NÃO reduz o custo: cada janela continua um processo
 // inteiro. ~6 janelas é o limite de um MacBook 14"; numa máquina potente dá
 // para subir o `count`, mas aos poucos, observando CPU/memória no terminal.
-const DISPLAYS = [
+// DISPLAYS_DEFAULT é a configuração padrão (edite aqui para multi-monitor).
+// Se QUALQUER flag de tela (-w/-h/-cols/-count) for passada, ela é ignorada e
+// o grid passa a ser UMA tela montada a partir das flags — as flags ausentes
+// caem nos padrões 4K abaixo.
+const DISPLAYS_DEFAULT = [
   { name: '4K 32"', x: 0, y: 0, wNative: 3840, hNative: 2160, cols: 4, count: 16 },
 ];
+const HAS_DISPLAY_FLAGS = ['-w', '-h', '-cols', '-count'].some((f) => ARGS.includes(f));
+const DISPLAYS = HAS_DISPLAY_FLAGS
+  ? [{
+      name: 'tela (flags)', x: 0, y: 0,
+      wNative: numFlag('-w', 3840),
+      hNative: numFlag('-h', 2160),
+      cols: numFlag('-cols', 4),
+      count: numFlag('-count', 16),
+    }]
+  : DISPLAYS_DEFAULT;
 const WINDOW_COUNT = DISPLAYS.reduce((s, d) => s + d.count, 0);
 
 // Domínios alvo — fonte única em domains.json. O run.py lê o mesmo arquivo
@@ -95,23 +131,35 @@ function proxyArgs(proxy) {
 // Brand "greasado" que o Chrome injeta nos Client Hints.
 const GREASE = { brand: 'Not)A;Brand', version: '99', full: '99.0.0.0' };
 
+// Listas de brand dos Client Hints (iguais para desktop e mobile).
+function brandList(major) {
+  return [
+    { brand: GREASE.brand, version: GREASE.version },
+    { brand: 'Chromium', version: String(major) },
+    { brand: 'Google Chrome', version: String(major) },
+  ];
+}
+function fullBrandList(full) {
+  return [
+    { brand: GREASE.brand, version: GREASE.full },
+    { brand: 'Chromium', version: full },
+    { brand: 'Google Chrome', version: full },
+  ];
+}
+
+// Perfil DESKTOP: Chrome no Windows/macOS. device='desktop', os='win'|'mac'.
 function chromeProfile({ id, label, osToken, platform, platformVersion, architecture, major, full }) {
   return {
     id,
     label,
+    device: 'desktop',
+    os: platform === 'Windows' ? 'win' : 'mac',
+    viewport: null,                 // desktop: viewport segue o tamanho da janela
     ua: `Mozilla/5.0 (${osToken}) AppleWebKit/537.36 (KHTML, like Gecko) `
       + `Chrome/${major}.0.0.0 Safari/537.36`,
     metadata: {
-      brands: [
-        { brand: GREASE.brand, version: GREASE.version },
-        { brand: 'Chromium', version: String(major) },
-        { brand: 'Google Chrome', version: String(major) },
-      ],
-      fullVersionList: [
-        { brand: GREASE.brand, version: GREASE.full },
-        { brand: 'Chromium', version: full },
-        { brand: 'Google Chrome', version: full },
-      ],
+      brands: brandList(major),
+      fullVersionList: fullBrandList(full),
       fullVersion: full,
       platform,
       platformVersion,
@@ -124,7 +172,36 @@ function chromeProfile({ id, label, osToken, platform, platformVersion, architec
   };
 }
 
-// Lista de perfis: sempre Chrome, variando SO e versão.
+// Perfil MOBILE: Chrome no Android. device='mobile'. O `viewport` é aplicado
+// com page.setViewport (isMobile+hasTouch) para o site renderizar em layout
+// mobile e a Clever receber sinais de dispositivo móvel (UA + Client Hints +
+// dimensões da tela). O UA traz "Mobile Safari" como o Chrome real no Android.
+function mobileProfile({ id, label, osToken, platformVersion, model, major, full, width, height, dpr }) {
+  return {
+    id,
+    label,
+    device: 'mobile',
+    os: 'android',
+    viewport: { width, height, deviceScaleFactor: dpr, isMobile: true, hasTouch: true },
+    ua: `Mozilla/5.0 (${osToken}) AppleWebKit/537.36 (KHTML, like Gecko) `
+      + `Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+    metadata: {
+      brands: brandList(major),
+      fullVersionList: fullBrandList(full),
+      fullVersion: full,
+      platform: 'Android',
+      platformVersion,
+      architecture: '',             // Android: arquitetura/bitness vão vazias
+      model,
+      mobile: true,
+      bitness: '',
+      wow64: false,
+    },
+  };
+}
+
+// Lista de perfis: Chrome desktop (Windows/macOS) e Chrome mobile (Android).
+// A seleção por ciclo respeita as flags -device / -device_mode / -platform.
 const PROFILES = [
   chromeProfile({
     id: 'win11-138', label: 'Windows 11 · Chrome 138',
@@ -149,6 +226,20 @@ const PROFILES = [
     osToken: 'Macintosh; Intel Mac OS X 10_15_7',
     platform: 'macOS', platformVersion: '14.5.0', architecture: 'x86',
     major: 136, full: '136.0.7103.114',
+  }),
+  mobileProfile({
+    id: 'android14-138', label: 'Android 14 · Pixel 8 · Chrome 138',
+    osToken: 'Linux; Android 14; Pixel 8',
+    platformVersion: '14.0.0', model: 'Pixel 8',
+    major: 138, full: '138.0.7204.97',
+    width: 412, height: 915, dpr: 2.625,
+  }),
+  mobileProfile({
+    id: 'android13-137', label: 'Android 13 · Galaxy S22 · Chrome 137',
+    osToken: 'Linux; Android 13; SM-S901B',
+    platformVersion: '13.0.0', model: 'SM-S901B',
+    major: 137, full: '137.0.7151.104',
+    width: 360, height: 780, dpr: 3,
   }),
 ];
 
@@ -187,14 +278,51 @@ function shuffled(arr) {
   return a;
 }
 
-function selectProfiles(arg) {
-  if (!arg) return PROFILES;
-  const m = PROFILES.filter((p) => p.id === arg || p.id.startsWith(arg));
+// --- seleção de perfis: classe de dispositivo e plataforma ------------------
+const DESKTOP_PROFILES = PROFILES.filter((p) => p.device === 'desktop');
+const MOBILE_PROFILES = PROFILES.filter((p) => p.device === 'mobile');
+
+// -device: que classes entregar. Padrão 'desktop' (comportamento original).
+const DEVICE = (() => {
+  const v = (flagValue('-device') || 'desktop').toLowerCase();
+  if (['desktop', 'mobile', 'all'].includes(v)) return v;
+  console.warn(`-device "${v}" inválido — usando desktop. Opções: desktop, mobile, all`);
+  return 'desktop';
+})();
+
+// -platform: filtra o SO dos perfis DESKTOP (mobile não é afetado).
+function desktopPool(arg) {
+  const a = (arg || 'all').toLowerCase();
+  if (a === 'all') return DESKTOP_PROFILES;
+  const m = DESKTOP_PROFILES.filter((p) => p.os === a);
   if (m.length) return m;
-  console.warn(`Nenhum perfil casa com "${arg}" — usando todos. `
-    + `Opções: ${PROFILES.map((p) => p.id).join(', ')}`);
-  return PROFILES;
+  console.warn(`-platform "${arg}" não casa nada — usando todos os desktop. `
+    + 'Opções: win, mac, all');
+  return DESKTOP_PROFILES;
 }
+
+// -device_mode: probabilidade de um ciclo ser DESKTOP (só vale com -device all).
+// 'random' = 0.5; 'N:M' = N/(N+M)  (ex.: '60:40' -> 0.6 desktop / 0.4 mobile).
+function desktopProb(arg) {
+  if (!arg || arg.toLowerCase() === 'random') return 0.5;
+  const m = /^(\d+)\s*:\s*(\d+)$/.exec(arg);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a + b > 0) return a / (a + b);
+  }
+  console.warn(`-device_mode "${arg}" inválido — usando random (50:50)`);
+  return 0.5;
+}
+
+const DESKTOP_PROB = desktopProb(flagValue('-device_mode'));
+
+// Pools efetivos por classe: vazios quando a classe não é usada, para o banner
+// e a seleção refletirem exatamente o que vai ao ar.
+const POOLS = {
+  desktop: DEVICE === 'mobile' ? [] : desktopPool(flagValue('-platform')),
+  mobile: DEVICE === 'desktop' ? [] : MOBILE_PROFILES,
+};
 
 // roda uma promise com teto de tempo. page.setUserAgent não tem timeout
 // próprio: se o renderer estiver travado, a chamada CDP ficaria pendurada por
@@ -244,20 +372,31 @@ const DEAD_RE = /Target closed|Session closed|detached|crash|disconnected|travou
 // aleatório, espera 5-10s e fecha — em seguida relança do zero. Cada ciclo é
 // um navegador "limpo", sem estado do anterior. Crash/travamento só encurta o
 // ciclo (o relançamento já é o comportamento normal).
-async function runWindow(windowIndex, profiles) {
+async function runWindow(windowIndex) {
   const slot = slotFor(windowIndex);
   // um IP por janela: PROXIES[windowIndex % len]. Sem proxies -> null.
   const proxy = PROXIES.length ? PROXIES[windowIndex % PROXIES.length] : null;
   const via = proxy ? `  ·  ${proxy.server}` : '';
   const tag = `janela ${windowIndex + 1}`;
-  let uaIdx = windowIndex % profiles.length; // cada janela começa num UA diferente
+  // round-robin de UA independente por classe; cada janela começa num offset.
+  let uaDesktop = windowIndex;
+  let uaMobile = windowIndex;
   let queue = [];
 
   while (!stopping) {
     if (queue.length === 0) queue = shuffled(DOMAINS);
     const domain = queue.shift();
-    const profile = profiles[uaIdx % profiles.length];
-    uaIdx++;
+
+    // classe do ciclo: -device fixa desktop/mobile; 'all' sorteia conforme
+    // -device_mode. Se a classe sorteada não tiver pool, cai na outra.
+    let cls = DEVICE === 'all'
+      ? (Math.random() < DESKTOP_PROB ? 'desktop' : 'mobile')
+      : DEVICE;
+    if (cls === 'desktop' && !POOLS.desktop.length) cls = 'mobile';
+    if (cls === 'mobile' && !POOLS.mobile.length) cls = 'desktop';
+    const profile = cls === 'mobile'
+      ? POOLS.mobile[uaMobile++ % POOLS.mobile.length]
+      : POOLS.desktop[uaDesktop++ % POOLS.desktop.length];
 
     let browser = null;
     let alive = false;
@@ -283,8 +422,12 @@ async function runWindow(windowIndex, profiles) {
 
       // setUserAgent ANTES do goto: alinha header + Client Hints + userAgentData.
       await withTimeout(page.setUserAgent(profile.ua, profile.metadata), 20000, 'setUserAgent');
+      // mobile: emula viewport/touch/DPR — o site renderiza em layout mobile.
+      if (profile.viewport) {
+        await withTimeout(page.setViewport(profile.viewport), 20000, 'setViewport');
+      }
       await page.goto(`https://${domain}/`, { waitUntil: 'domcontentloaded', timeout: 25000 });
-      console.log(`[${tag}] ${domain}  ·  ${profile.id}${via}`);
+      console.log(`[${tag}] ${domain}  ·  ${profile.id} (${profile.device})${via}`);
 
       if (STATIC) {
         // modo clique: fica parado nesse domínio até o Ctrl+C.
@@ -314,13 +457,17 @@ async function runWindow(windowIndex, profiles) {
 }
 
 async function main() {
-  const profiles = selectProfiles(PROFILE_ARG);
+  const deviceDesc = DEVICE === 'all'
+    ? `desktop+mobile ${Math.round(DESKTOP_PROB * 100)}:${Math.round((1 - DESKTOP_PROB) * 100)}`
+    : DEVICE;
   console.log(`ua-rotate: ${WINDOW_COUNT} janelas · ${DOMAINS.length} domínios`
     + (STATIC ? ' · modo STATIC (sem reload — para testar clique)'
-              : ` · reload ${RELOAD_MIN}-${RELOAD_MAX}s, ordem aleatória`)
-    + ` · UA round-robin (${profiles.length} perfis)`);
+              : ` · reload ${RELOAD_MIN}-${RELOAD_MAX}s, ordem aleatória`));
   console.log('Telas: ' + DISPLAYS.map((d) => `${d.name} ${d.count}j`).join(' · ')
     + ` · zoom ${Math.round(SCALE * 100)}%`);
+  console.log(`Agentes: ${deviceDesc}`
+    + ` · desktop=[${POOLS.desktop.map((p) => p.id).join(', ') || '—'}]`
+    + ` · mobile=[${POOLS.mobile.map((p) => p.id).join(', ') || '—'}]`);
   console.log(PROXIES.length
     ? `Proxies: ${PROXIES.length} (1 IP por janela, round-robin) · `
       + PROXIES.map((p) => p.server).join(', ')
@@ -339,7 +486,7 @@ async function main() {
 
   await Promise.all(
     Array.from({ length: WINDOW_COUNT }, (_, i) =>
-      runWindow(i, profiles).catch((e) => console.error(`janela ${i + 1}: ${e.message}`)))
+      runWindow(i).catch((e) => console.error(`janela ${i + 1}: ${e.message}`)))
   );
   await closeAll();
 }

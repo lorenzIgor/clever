@@ -54,8 +54,14 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   (não é `reload` da mesma aba, é fechar e reabrir). A cada relançamento troca o
   perfil de User-Agent (round-robin, `PROFILES`), alinhando header `User-Agent`
   + Client Hints (`Sec-CH-UA*`) + `navigator.userAgentData` via
-  `setUserAgent(ua, metadata)`. Se o Chrome travar/cair, o ciclo só reinicia
-  antes. `package.json` + `puppeteer.config.cjs` (usa o Chrome instalado).
+  `setUserAgent(ua, metadata)`. Os perfis incluem **desktop** (Chrome no
+  Windows/macOS) e **mobile** (Chrome no Android, com `page.setViewport`
+  `isMobile`/`hasTouch` para o site renderizar em layout mobile); cada ciclo
+  sorteia a classe conforme as flags `-device`/`-device_mode`. Se o Chrome
+  travar/cair, o ciclo só reinicia antes. Aceita flags de tela
+  (`-w -h -cols -count -scale`) e de agente (`-platform -device -device_mode`)
+  — sem flags, usa os padrões das constantes do arquivo. `package.json` +
+  `puppeteer.config.cjs` (usa o Chrome instalado).
 - **`run.py`** — orquestrador cross-platform (Python, só stdlib; macOS/Windows/
   Linux). Num comando: garante os domínios no arquivo hosts, gera o `Caddyfile`,
   limpa o DNS, sobe `proxy.js` + `caddy` + `ua-rotate.js` e derruba tudo na
@@ -80,15 +86,18 @@ abrir a porta 443).
 ```bash
 # macOS / Linux
 sudo python3 run.py
-sudo python3 run.py static     # janelas não recarregam (para testar clique)
-sudo python3 run.py win        # filtra os perfis de UA por "win"
+sudo python3 run.py static                          # janelas não recarregam (testar clique)
+sudo python3 run.py -platform win                   # só perfis de UA Windows
+sudo python3 run.py -device all -device_mode 60:40  # entrega desktop+mobile, 60/40
+sudo python3 run.py -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5  # ajusta o grid da tela
 ```
 
 ```powershell
 # Windows — abrir o Terminal/PowerShell COMO ADMINISTRADOR
 python run.py
+python run.py -device all -device_mode 60:40   # entrega desktop+mobile, 60/40
 .\watchdog.ps1            # roda o run.py e o relança sozinho se cair
-.\watchdog.ps1 static     # argumentos são repassados ao run.py
+.\watchdog.ps1 -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5   # flags repassadas ao run.py
 ```
 
 O `run.py` faz tudo: arquivo hosts, gera o `Caddyfile`, flush de DNS, sobe
@@ -96,8 +105,19 @@ O `run.py` faz tudo: arquivo hosts, gera o `Caddyfile`, flush de DNS, sobe
 do proxy loga cada request e a linha `[html] ... injetado=true`; o
 `ua-rotate.js` loga `[janela N] domínio · perfil` a cada relançamento.
 
-Ajustes: env `RELOAD_MIN_S`/`RELOAD_MAX_S` (padrão 5/10s) e a const `DISPLAYS`
-no `ua-rotate.js` (telas: origem/tamanho/colunas/quantas janelas).
+Ajustes via flags de linha de comando (repassadas pelo `run.py`/`watchdog.ps1`
+ao `ua-rotate.js`):
+
+- **Tela:** `-w <px>` / `-h <px>` (resolução nativa), `-cols <n>`, `-count <n>`
+  (janelas), `-scale <f>` (zoom global). Passar qualquer flag de tela monta uma
+  tela única a partir delas; sem flags, usa `DISPLAYS_DEFAULT`.
+- **Agente:** `-platform win|mac|all` (SO dos perfis desktop), `-device
+  desktop|mobile|all` (classes a entregar), `-device_mode random|N:M` (proporção
+  desktop:mobile quando `-device all`, ex.: `60:40`).
+
+Sem flags, o padrão é o do `ua-rotate.js` (desktop, 4K, 16 janelas). Também: env
+`RELOAD_MIN_S`/`RELOAD_MAX_S` (padrão 5/10s) e, para multi-monitor, a const
+`DISPLAYS_DEFAULT` no `ua-rotate.js`.
 
 ## Domínios alvo
 
@@ -144,3 +164,9 @@ Foi o caso do `whoscored.com`, removido da lista.
   vão "parando". As janelas são supervisionadas (relançam sozinhas se o Chrome
   travar/cair), mas isso não cria capacidade — se a máquina satura, relançar só
   piora. Para mais janelas: outra máquina, ou subir `RELOAD_MIN_S`/`MAX_S`.
+- **Mobile é emulação, não janela física.** A janela continua ocupando o slot
+  do grid no tamanho normal; o `page.setViewport` com `isMobile`/`hasTouch` faz
+  a página renderizar em largura mobile *dentro* da janela. A Clever recebe os
+  sinais de dispositivo móvel pelo UA Android + Client Hints (`mobile: true`) +
+  dimensões do viewport — é o que decide a entrega mobile, não o tamanho da
+  janela do SO.

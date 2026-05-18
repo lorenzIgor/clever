@@ -15,9 +15,12 @@ PRECISA de privilegios de administrador (editar o hosts + abrir a porta 443):
   macOS / Linux:  sudo python3 run.py
   Windows:        abra o Terminal/PowerShell COMO ADMINISTRADOR e:  python run.py
 
-Argumentos extras sao repassados ao ua-rotate.js. Ex.:
-  sudo python3 run.py static     # janelas nao recarregam (testar clique)
-  sudo python3 run.py win        # rotaciona so os perfis de UA "win*"
+Argumentos extras sao repassados tal e qual ao ua-rotate.js. Ex.:
+  sudo python3 run.py static                            # janelas nao recarregam
+  sudo python3 run.py -platform win                     # so perfis de UA Windows
+  sudo python3 run.py -device all -device_mode 60:40    # desktop+mobile 60/40
+  sudo python3 run.py -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5  # grid da tela
+Veja o cabecalho do ua-rotate.js para a lista completa de flags.
 """
 
 import json

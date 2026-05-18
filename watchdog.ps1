@@ -8,8 +8,13 @@ tudo na ordem. Este script so percebe que o run.py terminou e o sobe de novo.
 
 USO (abra o Terminal/PowerShell COMO ADMINISTRADOR):
     .\watchdog.ps1
-    .\watchdog.ps1 static       # os argumentos sao repassados ao run.py
-    .\watchdog.ps1 win
+    .\watchdog.ps1 static
+    .\watchdog.ps1 -platform win
+    .\watchdog.ps1 -device all -device_mode 60:40
+    .\watchdog.ps1 -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5
+
+Todos os argumentos sao repassados ao run.py, que os repassa ao ua-rotate.js
+(veja o cabecalho do ua-rotate.js para a lista de flags).
 
 Ctrl+C encerra o watchdog (e o run.py junto). Apos cada saida do run.py ha
 uma janela de RESTART_DELAY segundos -- da pra cancelar com Ctrl+C ali tambem.
