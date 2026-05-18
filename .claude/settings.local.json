@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git rebase *)",
+      "Bash(git stash *)",
+      "Bash(git push *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git reset *)",
+      "Bash(npm uninstall *)",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).dependencies,null,2\\)\\)\")"
+    ]
+  }
+}
