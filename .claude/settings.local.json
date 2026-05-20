@@ -9,7 +9,11 @@
       "Bash(git commit *)",
       "Bash(git reset *)",
       "Bash(npm uninstall *)",
-      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).dependencies,null,2\\)\\)\")"
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).dependencies,null,2\\)\\)\")",
+      "Bash(node -c ua-rotate.js)",
+      "Bash(git update-index *)",
+      "Bash(chmod +x watchdog.sh)",
+      "Bash(bash -n watchdog.sh)"
     ]
   }
 }

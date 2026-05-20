@@ -20,7 +20,7 @@
 //   -cols <n>                   colunas do grid de janelas (padrão 4).
 //   -count <n>                  quantas janelas abrir (padrão 16).
 //   -scale <f>                  zoom global do Chrome (padrão 0.5 = 50%).
-//   -platform win|mac|all       filtra o SO dos perfis DESKTOP (padrão all).
+//   -platform win|mac|linux|all filtra o SO dos perfis DESKTOP (padrão all).
 //   -device desktop|mobile|all  classes de dispositivo a entregar (padrão desktop).
 //   -device_mode random|N:M     proporção desktop:mobile p/ -device all
 //                                (padrão random = 50:50; ex.: 60:40).
@@ -153,7 +153,7 @@ function chromeProfile({ id, label, osToken, platform, platformVersion, architec
     id,
     label,
     device: 'desktop',
-    os: platform === 'Windows' ? 'win' : 'mac',
+    os: platform === 'Windows' ? 'win' : platform === 'macOS' ? 'mac' : 'linux',
     viewport: null,                 // desktop: viewport segue o tamanho da janela
     ua: `Mozilla/5.0 (${osToken}) AppleWebKit/537.36 (KHTML, like Gecko) `
       + `Chrome/${major}.0.0.0 Safari/537.36`,
@@ -227,6 +227,12 @@ const PROFILES = [
     platform: 'macOS', platformVersion: '14.5.0', architecture: 'x86',
     major: 136, full: '136.0.7103.114',
   }),
+  chromeProfile({
+    id: 'linux-138', label: 'Linux (Ubuntu) · Chrome 138',
+    osToken: 'X11; Linux x86_64',
+    platform: 'Linux', platformVersion: '6.8.0', architecture: 'x86',
+    major: 138, full: '138.0.7204.97',
+  }),
   mobileProfile({
     id: 'android14-138', label: 'Android 14 · Pixel 8 · Chrome 138',
     osToken: 'Linux; Android 14; Pixel 8',
@@ -297,7 +303,7 @@ function desktopPool(arg) {
   const m = DESKTOP_PROFILES.filter((p) => p.os === a);
   if (m.length) return m;
   console.warn(`-platform "${arg}" não casa nada — usando todos os desktop. `
-    + 'Opções: win, mac, all');
+    + 'Opções: win, mac, linux, all');
   return DESKTOP_PROFILES;
 }
 

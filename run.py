@@ -221,7 +221,7 @@ def main():
     if not caddy:
         hint = ('winget install CaddyServer.Caddy' if IS_WIN else
                 'brew install caddy' if OS == 'Darwin' else
-                'veja https://caddyserver.com/docs/install')
+                'siga a secao Linux do README.md (apt repo oficial do Caddy)')
         fail('caddy nao encontrado no PATH - instale com: %s' % hint)
     if not os.path.isdir(os.path.join(ROOT, 'node_modules', 'puppeteer')):
         fail('dependencias nao instaladas - rode primeiro:  npm install')

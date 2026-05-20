@@ -66,6 +66,10 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   Linux). Num comando: garante os domínios no arquivo hosts, gera o `Caddyfile`,
   limpa o DNS, sobe `proxy.js` + `caddy` + `ua-rotate.js` e derruba tudo na
   ordem no Ctrl+C. Precisa rodar elevado (`sudo` / Administrador).
+- **`watchdog.sh`** — watchdog do `run.py` no macOS e Linux (bash, só roda
+  como root). Equivalente POSIX do `watchdog.ps1`. Mesma lógica: loop infinito
+  rodando `python3 run.py`, religa se cair; Ctrl+C encerra junto. Repassa os
+  argumentos para o `run.py`. Precisa `chmod +x` uma vez.
 - **`watchdog.ps1`** — watchdog do `run.py` no Windows (PowerShell, só roda
   elevado). Loop infinito: roda `python run.py`, espera ele sair e o relança.
   Funciona porque o `run.py` já encerra sozinho de forma limpa quando um filho
@@ -84,13 +88,18 @@ O `run.py` precisa de privilégios de administrador (editar o arquivo hosts e
 abrir a porta 443).
 
 ```bash
-# macOS / Linux
+# macOS / Linux (Ubuntu 24.04)
 sudo python3 run.py
+sudo ./watchdog.sh                                  # relança sozinho se cair
 sudo python3 run.py static                          # janelas não recarregam (testar clique)
-sudo python3 run.py -platform win                   # só perfis de UA Windows
+sudo python3 run.py -platform linux                 # só perfis de UA Linux
 sudo python3 run.py -device all -device_mode 60:40  # entrega desktop+mobile, 60/40
 sudo python3 run.py -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5  # ajusta o grid da tela
 ```
+
+> No Ubuntu 24.04 o pacote `caddy` do apt sobe um serviço que prende a porta
+> 443. Desligue com `sudo systemctl disable --now caddy` (o `run.py` sobe seu
+> próprio Caddy). Em servidor sem desktop, use `xvfb-run`.
 
 ```powershell
 # Windows — abrir o Terminal/PowerShell COMO ADMINISTRADOR
@@ -111,7 +120,7 @@ ao `ua-rotate.js`):
 - **Tela:** `-w <px>` / `-h <px>` (resolução nativa), `-cols <n>`, `-count <n>`
   (janelas), `-scale <f>` (zoom global). Passar qualquer flag de tela monta uma
   tela única a partir delas; sem flags, usa `DISPLAYS_DEFAULT`.
-- **Agente:** `-platform win|mac|all` (SO dos perfis desktop), `-device
+- **Agente:** `-platform win|mac|linux|all` (SO dos perfis desktop), `-device
   desktop|mobile|all` (classes a entregar), `-device_mode random|N:M` (proporção
   desktop:mobile quando `-device all`, ex.: `60:40`).
 
