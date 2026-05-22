@@ -1,11 +1,11 @@
 {
-  "games.op.gg": 1,
-  "www.ffonts.net": 1,
-  "sport.sky.de": 1,
-  "deadspin.com": 1,
-  "lakersnation.com": 1,
-  "bloodyelbow.com": 1,
-  "sport.ch": 1,
-  "sport.quotidiano.net": 1,
-  "amenteemaravilhosa.com.br": 1
+  "games.op.gg": [1, 0],
+  "www.ffonts.net": [1, 0],
+  "sport.sky.de": [1, 0],
+  "deadspin.com": [1, 0],
+  "lakersnation.com": [1, 0],
+  "bloodyelbow.com": [1, 0],
+  "sport.ch": [1, 0],
+  "sport.quotidiano.net": [1, 0],
+  "amenteemaravilhosa.com.br": [1, 0]
 }

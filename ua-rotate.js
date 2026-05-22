@@ -94,14 +94,25 @@ const DISPLAYS = HAS_DISPLAY_FLAGS
   : DISPLAYS_DEFAULT;
 const WINDOW_COUNT = DISPLAYS.reduce((s, d) => s + d.count, 0);
 
-// Domínios alvo — fonte única em domains.json (objeto `dominio: peso`). O
-// run.py lê o mesmo arquivo para o hosts e para gerar o Caddyfile. Peso é o
-// valor relativo da loteria por ciclo: peso 2 sai o dobro de um peso 1,
-// independente da escala (0..1, 0..100, tanto faz — a soma é normalizada).
-// Peso 0 = nunca sorteia (útil para "pausar" um domínio sem removê-lo).
-const DOMAINS_WEIGHTS = require('./domains.json');
-const DOMAINS = Object.keys(DOMAINS_WEIGHTS);
-const WEIGHTS = DOMAINS.map((d) => Number(DOMAINS_WEIGHTS[d]) || 0);
+// Domínios alvo — fonte única em domains.json (objeto `dominio: [peso, ctr]`).
+// O run.py lê o mesmo arquivo para o hosts e para gerar o Caddyfile.
+//   - peso  = valor relativo do sorteio por ciclo (peso 2 sai o dobro de um
+//             peso 1; a soma é normalizada — escala 0..1, 0..100, tanto faz).
+//             Peso 0 = nunca sorteia (útil para "pausar" sem remover).
+//   - ctr   = taxa de clique em PERCENTUAL, por IMPRESSÃO (0.1 = 0.1% =
+//             1 clique a cada 1000 anúncios renderizados). CTR 0 = nunca clica.
+// Aceita também o formato antigo (só número = só peso, ctr 0).
+const DOMAINS_CFG = require('./domains.json');
+const DOMAINS = Object.keys(DOMAINS_CFG);
+const WEIGHTS = DOMAINS.map((d) => {
+  const v = DOMAINS_CFG[d];
+  return Number(Array.isArray(v) ? v[0] : v) || 0;
+});
+const CTRS = DOMAINS.reduce((acc, d) => {
+  const v = DOMAINS_CFG[d];
+  acc[d] = Number(Array.isArray(v) ? v[1] : 0) || 0;
+  return acc;
+}, {});
 const WEIGHT_TOTAL = WEIGHTS.reduce((a, b) => a + b, 0);
 if (WEIGHT_TOTAL <= 0) {
   throw new Error('domains.json: soma dos pesos é 0 — nenhum domínio sorteável.');
@@ -353,6 +364,53 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
 }
 
+// --- clique no criativo (CTR por impressão) ---------------------------------
+// Espera o iframe do anúncio renderizar dentro de .clever-core-ads (até ~4s).
+// CTR é por IMPRESSÃO: se o anúncio nunca aparece, a tentativa nem conta para
+// o denominador (não rola a roleta). Quando renderiza, sorteia uma vez com
+// `ctrPct%`; se passar, clica no centro do iframe.
+//
+// Coordenadas são LOCAIS à página (CSS px, viewport-relative). page.mouse.click
+// dispara o evento no renderer DESSA aba via CDP — então a posição da janela
+// no desktop, a grade (cols/count) e o --force-device-scale-factor não
+// afetam o destino do clique: cada janela tem o próprio `page` e o evento
+// vai para a página onde foi chamado, em coordenadas da própria página.
+// getBoundingClientRect() retorna nas mesmas CSS px → bate com mouse.click.
+//
+// Desktop usa mouse.click; mobile (viewport.isMobile) usa touchscreen.tap,
+// para a Clever receber sinal de toque condizente com o UA mobile. O evento
+// vai como input real do navegador e atravessa o iframe cross-origin da
+// Clever (é o que faz a rede contar como clique humano — iframe.click() do
+// lado JS não chegaria no documento interno).
+async function tryClick(page, domain, ctrPct, tag, profile) {
+  if (ctrPct <= 0) return;
+  let rect = null;
+  for (let t = 0; t < 16 && !stopping; t++) {  // até ~4s (16 × 250ms)
+    rect = await page.evaluate(() => {
+      const ifr = document.querySelector('.clever-core-ads iframe');
+      if (!ifr) return null;
+      const r = ifr.getBoundingClientRect();
+      if (r.width < 5 || r.height < 5) return null;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }).catch(() => null);
+    if (rect) break;
+    await sleep(250);
+  }
+  if (!rect) return;
+  if (Math.random() * 100 >= ctrPct) return;
+  // jitter de poucos px pra não bater sempre exatamente no mesmo pixel.
+  const jitter = () => (Math.random() - 0.5) * 8;
+  const x = rect.x + jitter();
+  const y = rect.y + jitter();
+  const isMobile = !!(profile && profile.viewport && profile.viewport.isMobile);
+  if (isMobile) {
+    await page.touchscreen.tap(x, y).catch(() => {});
+  } else {
+    await page.mouse.click(x, y).catch(() => {});
+  }
+  console.log(`[${tag}] CLICK em ${domain} (${isMobile ? 'tap' : 'mouse'}, ctr ${ctrPct}%)`);
+}
+
 // --- loop de uma janela (auto-recuperável) ----------------------------------
 const browsers = new Set();
 let stopping = false;
@@ -445,11 +503,15 @@ async function runWindow(windowIndex) {
       console.log(`[${tag}] ${domain}  ·  ${profile.id} (${profile.device})${via}`);
 
       if (STATIC) {
-        // modo clique: fica parado nesse domínio até o Ctrl+C.
+        // modo clique: fica parado nesse domínio até o Ctrl+C. Não auto-clica
+        // — STATIC é para o usuário testar o clique na mão.
         while (!stopping && alive) await sleep(1000);
       } else {
-        // mantém a janela 5-10s (passos de 1s p/ reagir rápido ao Ctrl+C) e
-        // então o finally a fecha; o while externo relança um Chrome novo.
+        // dispara em background a roleta de clique (CTR por impressão).
+        // não bloqueia: enquanto o sleep abaixo conta os 5-10s, o tryClick
+        // espera o iframe do anúncio aparecer e — se sortear — clica nele.
+        // erros são engolidos no .catch (Target closed quando o ciclo fecha).
+        tryClick(page, domain, CTRS[domain] || 0, tag, profile).catch(() => {});
         const secs = randInt(RELOAD_MIN, RELOAD_MAX);
         for (let t = 0; t < secs && !stopping && alive; t++) await sleep(1000);
       }

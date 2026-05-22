@@ -42,10 +42,12 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   Clever entra como primeiro nó dentro do `<body>` (`BODY_OPEN_RE`), flutuante
   (`position:fixed`, 0,0, z-index máximo); o loader vai no fim do `<body>`.
 - **`domains.json`** — fonte única da lista de domínios alvo. Formato: objeto
-  JSON `{"dominio": peso}`. O peso é o valor relativo do sorteio por ciclo (o
-  `ua-rotate.js` normaliza pela soma — `0..1`, `0..100`, tanto faz); peso `0`
-  pausa o domínio sem removê-lo. O `run.py` lê só as chaves (para o hosts e o
-  Caddyfile); o `ua-rotate.js` lê chaves + pesos.
+  JSON `{"dominio": [peso, ctr]}`. `peso` é o valor relativo do sorteio por
+  ciclo (o `ua-rotate.js` normaliza pela soma — `0..1`, `0..100`, tanto faz);
+  peso `0` pausa o domínio sem removê-lo. `ctr` é a taxa de clique em
+  **percentual, por impressão** (`0.1` = 0,1% = 1 clique a cada 1000 anúncios
+  renderizados); `0` = nunca clica. O `run.py` lê só as chaves (para o hosts e
+  o Caddyfile); o `ua-rotate.js` lê tudo.
 - **`Caddyfile`** — site (TLS interno) + `reverse_proxy` para o proxy.
   **Gerado pelo `run.py`** a partir de `domains.json` — não editar à mão.
 - **`index.html`** — página de teste standalone (legado, dos primeiros testes).
@@ -53,7 +55,11 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
 - **`ua-rotate.js`** — abre `WINDOW_COUNT` janelas do Chrome (Puppeteer), uma
   por slot do grid de `DISPLAYS`. Cada janela **relança um Chrome novo a cada
   5-10s** (`RELOAD_MIN_S`/`RELOAD_MAX_S`) num domínio sorteado por peso de
-  `domains.json` (`pickDomain()`, proporcional ao valor do peso) — a cada ciclo o navegador sobe limpo, sem estado do anterior
+  `domains.json` (`pickDomain()`, proporcional ao valor do peso). Em paralelo
+  ao ciclo, `tryClick()` espera o iframe do anúncio aparecer dentro de
+  `.clever-core-ads` (até ~4s) e — se a roleta do CTR passar — clica no
+  centro do criativo (`page.mouse.click` em desktop, `page.touchscreen.tap`
+  em mobile). A cada ciclo o navegador sobe limpo, sem estado do anterior
   (não é `reload` da mesma aba, é fechar e reabrir). A cada relançamento troca o
   perfil de User-Agent (round-robin, `PROFILES`), alinhando header `User-Agent`
   + Client Hints (`Sec-CH-UA*`) + `navigator.userAgentData` via
