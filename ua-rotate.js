@@ -364,11 +364,17 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
 }
 
-// --- clique no criativo (CTR por impressão) ---------------------------------
+// --- clique no criativo (CTR determinístico por impressão) ------------------
 // Espera o iframe do anúncio renderizar dentro de .clever-core-ads (até ~4s).
-// CTR é por IMPRESSÃO: se o anúncio nunca aparece, a tentativa nem conta para
-// o denominador (não rola a roleta). Quando renderiza, sorteia uma vez com
-// `ctrPct%`; se passar, clica no centro do iframe.
+// Cada renderização conta como UMA impressão; o contador é por (janela,
+// domínio) — vive no closure do runWindow, persiste entre ciclos e crashes
+// daquela janela, e nunca se mistura com o de outra janela.
+//
+// Quando o contador da (janela, domínio) atinge `round(100/CTR%)`, dispara o
+// clique e zera. Deterministico — cada N impressões dá exatamente 1 clique,
+// sem variância de roleta. Cada domínio tem o próprio threshold porque cada
+// um traz seu CTR; o "por janela" pedido continua valendo (contadores não se
+// misturam entre janelas).
 //
 // Coordenadas são LOCAIS à página (CSS px, viewport-relative). page.mouse.click
 // dispara o evento no renderer DESSA aba via CDP — então a posição da janela
@@ -382,23 +388,26 @@ function withTimeout(promise, ms, label) {
 // vai como input real do navegador e atravessa o iframe cross-origin da
 // Clever (é o que faz a rede contar como clique humano — iframe.click() do
 // lado JS não chegaria no documento interno).
-async function tryClick(page, domain, ctrPct, tag, profile) {
-  if (ctrPct <= 0) return;
-  let rect = null;
+
+// Espera o iframe do anúncio renderizar; devolve {x,y} centrado, ou null.
+async function waitForAd(page) {
   for (let t = 0; t < 16 && !stopping; t++) {  // até ~4s (16 × 250ms)
-    rect = await page.evaluate(() => {
+    const rect = await page.evaluate(() => {
       const ifr = document.querySelector('.clever-core-ads iframe');
       if (!ifr) return null;
       const r = ifr.getBoundingClientRect();
       if (r.width < 5 || r.height < 5) return null;
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     }).catch(() => null);
-    if (rect) break;
+    if (rect) return rect;
     await sleep(250);
   }
-  if (!rect) return;
-  if (Math.random() * 100 >= ctrPct) return;
-  // jitter de poucos px pra não bater sempre exatamente no mesmo pixel.
+  return null;
+}
+
+// Dispara mouse.click (desktop) ou touchscreen.tap (mobile) em (x,y), com
+// jitter de poucos px pra não bater sempre exatamente no mesmo pixel.
+async function clickAt(page, profile, rect) {
   const jitter = () => (Math.random() - 0.5) * 8;
   const x = rect.x + jitter();
   const y = rect.y + jitter();
@@ -408,7 +417,7 @@ async function tryClick(page, domain, ctrPct, tag, profile) {
   } else {
     await page.mouse.click(x, y).catch(() => {});
   }
-  console.log(`[${tag}] CLICK em ${domain} (${isMobile ? 'tap' : 'mouse'}, ctr ${ctrPct}%)`);
+  return isMobile ? 'tap' : 'mouse';
 }
 
 // --- loop de uma janela (auto-recuperável) ----------------------------------
@@ -456,6 +465,11 @@ async function runWindow(windowIndex) {
   // round-robin de UA independente por classe; cada janela começa num offset.
   let uaDesktop = windowIndex;
   let uaMobile = windowIndex;
+  // Contador de impressões por DOMÍNIO desta janela. Persiste entre ciclos e
+  // crashes — vive aqui no closure do runWindow, então é nativamente
+  // "por janela". A divisão extra por domínio existe porque cada um traz seu
+  // próprio CTR (e portanto seu próprio threshold).
+  const impressionCounts = new Map();
 
   while (!stopping) {
     const domain = pickDomain();
@@ -507,11 +521,26 @@ async function runWindow(windowIndex) {
         // — STATIC é para o usuário testar o clique na mão.
         while (!stopping && alive) await sleep(1000);
       } else {
-        // dispara em background a roleta de clique (CTR por impressão).
-        // não bloqueia: enquanto o sleep abaixo conta os 5-10s, o tryClick
-        // espera o iframe do anúncio aparecer e — se sortear — clica nele.
-        // erros são engolidos no .catch (Target closed quando o ciclo fecha).
-        tryClick(page, domain, CTRS[domain] || 0, tag, profile).catch(() => {});
+        // Background: espera o iframe do anúncio aparecer; quando aparece,
+        // soma 1 ao contador da (janela, domínio). Ao bater o threshold
+        // (= round(100/CTR%)), clica e zera. Determinístico: CTR 0.1% → 1
+        // clique a cada 1000 impressões, exatamente. Não bloqueia o ciclo;
+        // erros são engolidos (Target closed quando o browser fecha).
+        (async () => {
+          const rect = await waitForAd(page);
+          if (!rect) return;
+          const ctr = CTRS[domain] || 0;
+          if (ctr <= 0) return;
+          const threshold = Math.max(1, Math.round(100 / ctr));
+          const n = (impressionCounts.get(domain) || 0) + 1;
+          if (n >= threshold) {
+            impressionCounts.set(domain, 0);
+            const kind = await clickAt(page, profile, rect);
+            console.log(`[${tag}] CLICK em ${domain} (${kind}, impressao ${n}/${threshold}, ctr ${ctr}%)`);
+          } else {
+            impressionCounts.set(domain, n);
+          }
+        })().catch(() => {});
         const secs = randInt(RELOAD_MIN, RELOAD_MAX);
         for (let t = 0; t < secs && !stopping && alive; t++) await sleep(1000);
       }

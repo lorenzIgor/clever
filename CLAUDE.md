@@ -46,8 +46,10 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   ciclo (o `ua-rotate.js` normaliza pela soma — `0..1`, `0..100`, tanto faz);
   peso `0` pausa o domínio sem removê-lo. `ctr` é a taxa de clique em
   **percentual, por impressão** (`0.1` = 0,1% = 1 clique a cada 1000 anúncios
-  renderizados); `0` = nunca clica. O `run.py` lê só as chaves (para o hosts e
-  o Caddyfile); o `ua-rotate.js` lê tudo.
+  renderizados); `0` = nunca clica. **Determinístico** — o `ua-rotate.js`
+  conta impressões por `(janela, domínio)` e clica exatamente ao bater
+  `round(100/ctr)`; sem variância de roleta. O `run.py` lê só as chaves
+  (para o hosts e o Caddyfile); o `ua-rotate.js` lê tudo.
 - **`Caddyfile`** — site (TLS interno) + `reverse_proxy` para o proxy.
   **Gerado pelo `run.py`** a partir de `domains.json` — não editar à mão.
 - **`index.html`** — página de teste standalone (legado, dos primeiros testes).
@@ -56,10 +58,14 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   por slot do grid de `DISPLAYS`. Cada janela **relança um Chrome novo a cada
   5-10s** (`RELOAD_MIN_S`/`RELOAD_MAX_S`) num domínio sorteado por peso de
   `domains.json` (`pickDomain()`, proporcional ao valor do peso). Em paralelo
-  ao ciclo, `tryClick()` espera o iframe do anúncio aparecer dentro de
-  `.clever-core-ads` (até ~4s) e — se a roleta do CTR passar — clica no
-  centro do criativo (`page.mouse.click` em desktop, `page.touchscreen.tap`
-  em mobile). A cada ciclo o navegador sobe limpo, sem estado do anterior
+  ao ciclo, `waitForAd()` espera o iframe do anúncio aparecer dentro de
+  `.clever-core-ads` (até ~4s); cada renderização conta como UMA impressão num
+  contador por **(janela, domínio)** que vive no closure do `runWindow`
+  (persiste entre ciclos e crashes daquela janela, isolado das outras). Ao
+  atingir `round(100/CTR%)` impressões, `clickAt()` dispara o clique no centro
+  do criativo (`page.mouse.click` em desktop, `page.touchscreen.tap` em
+  mobile) e zera o contador — determinístico, sem variância de roleta. A cada
+  ciclo o navegador sobe limpo, sem estado do anterior
   (não é `reload` da mesma aba, é fechar e reabrir). A cada relançamento troca o
   perfil de User-Agent (round-robin, `PROFILES`), alinhando header `User-Agent`
   + Client Hints (`Sec-CH-UA*`) + `navigator.userAgentData` via
