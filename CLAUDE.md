@@ -41,16 +41,19 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   `content-security-policy`/`strict-transport-security`/`x-frame-options`. A div
   Clever entra como primeiro nó dentro do `<body>` (`BODY_OPEN_RE`), flutuante
   (`position:fixed`, 0,0, z-index máximo); o loader vai no fim do `<body>`.
-- **`domains.json`** — fonte única da lista de domínios alvo. O `run.py` e o
-  `ua-rotate.js` leem deste arquivo; é o único lugar para editar a lista.
+- **`domains.json`** — fonte única da lista de domínios alvo. Formato: objeto
+  JSON `{"dominio": peso}`. O peso é o valor relativo do sorteio por ciclo (o
+  `ua-rotate.js` normaliza pela soma — `0..1`, `0..100`, tanto faz); peso `0`
+  pausa o domínio sem removê-lo. O `run.py` lê só as chaves (para o hosts e o
+  Caddyfile); o `ua-rotate.js` lê chaves + pesos.
 - **`Caddyfile`** — site (TLS interno) + `reverse_proxy` para o proxy.
   **Gerado pelo `run.py`** a partir de `domains.json` — não editar à mão.
 - **`index.html`** — página de teste standalone (legado, dos primeiros testes).
   Não é usada no modo proxy, onde o Caddy repassa tudo.
 - **`ua-rotate.js`** — abre `WINDOW_COUNT` janelas do Chrome (Puppeteer), uma
   por slot do grid de `DISPLAYS`. Cada janela **relança um Chrome novo a cada
-  5-10s** (`RELOAD_MIN_S`/`RELOAD_MAX_S`) num domínio aleatório de
-  `domains.json` — a cada ciclo o navegador sobe limpo, sem estado do anterior
+  5-10s** (`RELOAD_MIN_S`/`RELOAD_MAX_S`) num domínio sorteado por peso de
+  `domains.json` (`pickDomain()`, proporcional ao valor do peso) — a cada ciclo o navegador sobe limpo, sem estado do anterior
   (não é `reload` da mesma aba, é fechar e reabrir). A cada relançamento troca o
   perfil de User-Agent (round-robin, `PROFILES`), alinhando header `User-Agent`
   + Client Hints (`Sec-CH-UA*`) + `navigator.userAgentData` via
@@ -130,11 +133,13 @@ Sem flags, o padrão é o do `ua-rotate.js` (desktop, 4K, 16 janelas). Também: 
 
 ## Domínios alvo
 
-A lista vive **só em `domains.json`**. Para mudar os domínios, edite esse
-arquivo e rode o `run.py` de novo — ele atualiza o arquivo hosts e regera o
-`Caddyfile`; o `ua-rotate.js` lê o `domains.json` direto. O `proxy.js` é
-genérico (resolve qualquer host) e injeta a div no início do `<body>` — não
-precisa de ajuste por site.
+A lista vive **só em `domains.json`**, no formato `{"dominio": peso}`. O peso
+controla a frequência com que o `ua-rotate.js` visita cada domínio (sorteio
+ponderado por ciclo); todos com peso `1` = uniforme. Para mudar os domínios
+ou os pesos, edite esse arquivo e rode o `run.py` de novo — ele atualiza o
+arquivo hosts e regera o `Caddyfile`; o `ua-rotate.js` lê o `domains.json`
+direto. O `proxy.js` é genérico (resolve qualquer host) e injeta a div no
+início do `<body>` — não precisa de ajuste por site.
 
 Domínios atrás de proteção anti-bot forte (ex.: Cloudflare) podem não funcionar:
 o proxy busca o site server-side e o Cloudflare bloqueia o fingerprint do Node.

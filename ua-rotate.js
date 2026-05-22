@@ -1,12 +1,12 @@
 'use strict';
 // ua-rotate.js — abre N janelas do Chrome (uma por slot do grid das telas).
 //
-// Cada janela RELANÇA um Chrome novo a cada 5-10s, num domínio aleatório
-// (embaralha a lista e consome um por ciclo; ao terminar, reembaralha): a cada
-// ciclo o navegador sobe limpo, sem estado do anterior. A cada relançamento
-// troca também o perfil de User-Agent (round-robin, com offset por janela). Se
-// o Chrome travar ou cair, o ciclo só reinicia antes. Roda até Ctrl+C — ou
-// SIGINT vindo do run.py.
+// Cada janela RELANÇA um Chrome novo a cada 5-10s, num domínio sorteado por
+// PESO (campo de domains.json): cada ciclo é um sorteio independente, com
+// probabilidade proporcional ao peso. A cada relançamento troca também o
+// perfil de User-Agent (round-robin, com offset por janela). Se o Chrome
+// travar ou cair, o ciclo só reinicia antes. Roda até Ctrl+C — ou SIGINT
+// vindo do run.py.
 //
 // A troca de agente é no navegador porque os requests para a Clever
 // (scripts.cleverwebserver.com, beacon Pixel.gif) saem direto do navegador. O
@@ -94,9 +94,29 @@ const DISPLAYS = HAS_DISPLAY_FLAGS
   : DISPLAYS_DEFAULT;
 const WINDOW_COUNT = DISPLAYS.reduce((s, d) => s + d.count, 0);
 
-// Domínios alvo — fonte única em domains.json. O run.py lê o mesmo arquivo
-// para o hosts e para gerar o Caddyfile.
-const DOMAINS = require('./domains.json');
+// Domínios alvo — fonte única em domains.json (objeto `dominio: peso`). O
+// run.py lê o mesmo arquivo para o hosts e para gerar o Caddyfile. Peso é o
+// valor relativo da loteria por ciclo: peso 2 sai o dobro de um peso 1,
+// independente da escala (0..1, 0..100, tanto faz — a soma é normalizada).
+// Peso 0 = nunca sorteia (útil para "pausar" um domínio sem removê-lo).
+const DOMAINS_WEIGHTS = require('./domains.json');
+const DOMAINS = Object.keys(DOMAINS_WEIGHTS);
+const WEIGHTS = DOMAINS.map((d) => Number(DOMAINS_WEIGHTS[d]) || 0);
+const WEIGHT_TOTAL = WEIGHTS.reduce((a, b) => a + b, 0);
+if (WEIGHT_TOTAL <= 0) {
+  throw new Error('domains.json: soma dos pesos é 0 — nenhum domínio sorteável.');
+}
+
+// Sorteia um domínio com probabilidade proporcional ao peso.
+function pickDomain() {
+  const r = Math.random() * WEIGHT_TOTAL;
+  let acc = 0;
+  for (let i = 0; i < DOMAINS.length; i++) {
+    acc += WEIGHTS[i];
+    if (r < acc) return DOMAINS[i];
+  }
+  return DOMAINS[DOMAINS.length - 1]; // borda numérica
+}
 
 // --- PROXIES (IP de saída por janela) ----------------------------------------
 // Pool de proxies residenciais: cada janela usa PROXIES[windowIndex % len] —
@@ -275,15 +295,6 @@ function slotFor(windowIndex) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-function shuffled(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
 // --- seleção de perfis: classe de dispositivo e plataforma ------------------
 const DESKTOP_PROFILES = PROFILES.filter((p) => p.device === 'desktop');
 const MOBILE_PROFILES = PROFILES.filter((p) => p.device === 'mobile');
@@ -387,11 +398,9 @@ async function runWindow(windowIndex) {
   // round-robin de UA independente por classe; cada janela começa num offset.
   let uaDesktop = windowIndex;
   let uaMobile = windowIndex;
-  let queue = [];
 
   while (!stopping) {
-    if (queue.length === 0) queue = shuffled(DOMAINS);
-    const domain = queue.shift();
+    const domain = pickDomain();
 
     // classe do ciclo: -device fixa desktop/mobile; 'all' sorteia conforme
     // -device_mode. Se a classe sorteada não tiver pool, cai na outra.
@@ -468,7 +477,7 @@ async function main() {
     : DEVICE;
   console.log(`ua-rotate: ${WINDOW_COUNT} janelas · ${DOMAINS.length} domínios`
     + (STATIC ? ' · modo STATIC (sem reload — para testar clique)'
-              : ` · reload ${RELOAD_MIN}-${RELOAD_MAX}s, ordem aleatória`));
+              : ` · reload ${RELOAD_MIN}-${RELOAD_MAX}s, sorteio por peso`));
   console.log('Telas: ' + DISPLAYS.map((d) => `${d.name} ${d.count}j`).join(' · ')
     + ` · zoom ${Math.round(SCALE * 100)}%`);
   console.log(`Agentes: ${deviceDesc}`

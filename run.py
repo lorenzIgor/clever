@@ -68,14 +68,17 @@ def is_elevated():
 
 
 def load_domains():
+    """Le domains.json (objeto {dominio: peso}) e devolve a lista de dominios.
+    Os pesos sao usados so pelo ua-rotate.js; aqui interessa so a lista de
+    nomes (para o hosts e o Caddyfile)."""
     try:
         with open(DOMAINS_FILE, encoding='utf-8') as f:
-            domains = json.load(f)
+            data = json.load(f)
     except Exception as e:
         fail('nao consegui ler %s: %s' % (DOMAINS_FILE, e))
-    if not isinstance(domains, list) or not domains:
-        fail('%s deve ser uma lista de dominios nao vazia' % DOMAINS_FILE)
-    return domains
+    if not isinstance(data, dict) or not data:
+        fail('%s deve ser um objeto {"dominio": peso} nao vazio' % DOMAINS_FILE)
+    return list(data.keys())
 
 
 def ensure_hosts(domains):
