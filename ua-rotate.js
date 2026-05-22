@@ -365,16 +365,17 @@ function withTimeout(promise, ms, label) {
 }
 
 // --- clique no criativo (CTR determinístico por impressão) ------------------
-// Espera o iframe do anúncio renderizar dentro de .clever-core-ads (até ~4s).
-// Cada renderização conta como UMA impressão; o contador é por (janela,
-// domínio) — vive no closure do runWindow, persiste entre ciclos e crashes
-// daquela janela, e nunca se mistura com o de outra janela.
-//
-// Quando o contador da (janela, domínio) atinge `round(100/CTR%)`, dispara o
-// clique e zera. Deterministico — cada N impressões dá exatamente 1 clique,
-// sem variância de roleta. Cada domínio tem o próprio threshold porque cada
-// um traz seu CTR; o "por janela" pedido continua valendo (contadores não se
-// misturam entre janelas).
+// Contadores são GLOBAIS por domínio (não por janela): cada renderização do
+// anúncio em qualquer janela soma 1 ao contador do domínio. Ao atingir
+// `round(100/CTR%)`, a primeira janela disponível tenta o clique. Se o
+// clique falhar (Target closed, page morta, etc.), o contador NÃO é zerado —
+// fica em ≥ threshold e a próxima impressão em qualquer janela tenta de novo.
+// O reset (`count -= threshold`) acontece SÓ no clique bem-sucedido, então
+// nenhuma "intenção de clicar" se perde por crash de janela. Subtrair (em
+// vez de zerar) preserva impressões "extras" acumuladas entre a virada do
+// threshold e o clique de fato — a média de clicks/threshold continua exata.
+// `clickingNow` é o mutex que impede duas janelas clicarem ao mesmo tempo
+// para o mesmo domínio (corrida natural com 16 janelas paralelas).
 //
 // Coordenadas são LOCAIS à página (CSS px, viewport-relative). page.mouse.click
 // dispara o evento no renderer DESSA aba via CDP — então a posição da janela
@@ -388,6 +389,9 @@ function withTimeout(promise, ms, label) {
 // vai como input real do navegador e atravessa o iframe cross-origin da
 // Clever (é o que faz a rede contar como clique humano — iframe.click() do
 // lado JS não chegaria no documento interno).
+
+const globalCounts = new Map();   // domain -> impressões acumuladas (global)
+const clickingNow = new Set();    // domains com clique em andamento (mutex)
 
 // Espera o iframe do anúncio renderizar; devolve {x,y} centrado, ou null.
 async function waitForAd(page) {
@@ -407,17 +411,50 @@ async function waitForAd(page) {
 
 // Dispara mouse.click (desktop) ou touchscreen.tap (mobile) em (x,y), com
 // jitter de poucos px pra não bater sempre exatamente no mesmo pixel.
+// Propaga erros (Target closed, etc.) para o caller saber se o clique falhou.
 async function clickAt(page, profile, rect) {
   const jitter = () => (Math.random() - 0.5) * 8;
   const x = rect.x + jitter();
   const y = rect.y + jitter();
   const isMobile = !!(profile && profile.viewport && profile.viewport.isMobile);
   if (isMobile) {
-    await page.touchscreen.tap(x, y).catch(() => {});
+    await page.touchscreen.tap(x, y);
   } else {
-    await page.mouse.click(x, y).catch(() => {});
+    await page.mouse.click(x, y);
   }
   return isMobile ? 'tap' : 'mouse';
+}
+
+// Chamado quando o iframe do anúncio aparece em uma janela. Contabiliza no
+// contador global do domínio; se atingiu o threshold E nenhuma outra janela
+// está clicando naquele domínio, tenta o clique. Em caso de sucesso, subtrai
+// o threshold (preserva eventuais impressões extras). Em caso de falha,
+// não mexe no contador — a próxima impressão em qualquer janela cai direto
+// no ramo de clique de novo.
+async function handleImpression(page, profile, domain, rect, tag) {
+  const ctr = CTRS[domain] || 0;
+  if (ctr <= 0) return;
+  const threshold = Math.max(1, Math.round(100 / ctr));
+
+  // Toda impressão soma 1 — todas as janelas contribuem para o mesmo contador.
+  const n = (globalCounts.get(domain) || 0) + 1;
+  globalCounts.set(domain, n);
+
+  if (n < threshold) return;
+  // Outra janela já está cuidando deste domínio — não clica em duplicidade.
+  if (clickingNow.has(domain)) return;
+  clickingNow.add(domain);
+  try {
+    const kind = await clickAt(page, profile, rect);
+    // Sucesso: subtrai o threshold (carrega excedente para o próximo ciclo).
+    globalCounts.set(domain, Math.max(0, (globalCounts.get(domain) || 0) - threshold));
+    console.log(`[${tag}] CLICK em ${domain} (${kind}, ${n}/${threshold}, ctr ${ctr}%)`);
+  } catch (e) {
+    // Falha — contador permanece em ≥ threshold; outra janela tenta na próxima.
+    console.warn(`[${tag}] clique em ${domain} falhou (${e.message}) — passando para próxima impressão`);
+  } finally {
+    clickingNow.delete(domain);
+  }
 }
 
 // --- loop de uma janela (auto-recuperável) ----------------------------------
@@ -465,11 +502,6 @@ async function runWindow(windowIndex) {
   // round-robin de UA independente por classe; cada janela começa num offset.
   let uaDesktop = windowIndex;
   let uaMobile = windowIndex;
-  // Contador de impressões por DOMÍNIO desta janela. Persiste entre ciclos e
-  // crashes — vive aqui no closure do runWindow, então é nativamente
-  // "por janela". A divisão extra por domínio existe porque cada um traz seu
-  // próprio CTR (e portanto seu próprio threshold).
-  const impressionCounts = new Map();
 
   while (!stopping) {
     const domain = pickDomain();
@@ -521,25 +553,14 @@ async function runWindow(windowIndex) {
         // — STATIC é para o usuário testar o clique na mão.
         while (!stopping && alive) await sleep(1000);
       } else {
-        // Background: espera o iframe do anúncio aparecer; quando aparece,
-        // soma 1 ao contador da (janela, domínio). Ao bater o threshold
-        // (= round(100/CTR%)), clica e zera. Determinístico: CTR 0.1% → 1
-        // clique a cada 1000 impressões, exatamente. Não bloqueia o ciclo;
-        // erros são engolidos (Target closed quando o browser fecha).
+        // Background: espera o iframe do anúncio aparecer e delega para
+        // handleImpression (contador global por domínio + clique se threshold).
+        // Não bloqueia o ciclo; erros próprios são engolidos (Target closed
+        // quando o browser fecha antes do polling acabar).
         (async () => {
           const rect = await waitForAd(page);
           if (!rect) return;
-          const ctr = CTRS[domain] || 0;
-          if (ctr <= 0) return;
-          const threshold = Math.max(1, Math.round(100 / ctr));
-          const n = (impressionCounts.get(domain) || 0) + 1;
-          if (n >= threshold) {
-            impressionCounts.set(domain, 0);
-            const kind = await clickAt(page, profile, rect);
-            console.log(`[${tag}] CLICK em ${domain} (${kind}, impressao ${n}/${threshold}, ctr ${ctr}%)`);
-          } else {
-            impressionCounts.set(domain, n);
-          }
+          await handleImpression(page, profile, domain, rect, tag);
         })().catch(() => {});
         const secs = randInt(RELOAD_MIN, RELOAD_MAX);
         for (let t = 0; t < secs && !stopping && alive; t++) await sleep(1000);
@@ -579,9 +600,26 @@ async function main() {
       + PROXIES.map((p) => p.server).join(', ')
     : 'Proxies: nenhum (Chrome sai pelo IP da máquina)');
 
+  // Status periódico do contador global de impressões. Só lista domínios com
+  // CTR > 0 (os outros não disparam clique). Cadência: a cada STATS_EVERY_MS.
+  const STATS_EVERY_MS = 5000;
+  const statsDomains = DOMAINS.filter((d) => (CTRS[d] || 0) > 0);
+  const statsTimer = statsDomains.length && !STATIC ? setInterval(() => {
+    if (stopping) return;
+    const parts = statsDomains.map((d) => {
+      const ctr = CTRS[d];
+      const n = globalCounts.get(d) || 0;
+      const threshold = Math.max(1, Math.round(100 / ctr));
+      const pct = Math.min(999, Math.round((n / threshold) * 100));
+      return `${d}=${n}/${threshold} (${pct}%)`;
+    });
+    console.log(`[stats] ${parts.join('  ·  ')}`);
+  }, STATS_EVERY_MS) : null;
+
   const shutdown = async () => {
     if (stopping) process.exit(1); // segundo sinal: sai na marra
     stopping = true;
+    if (statsTimer) clearInterval(statsTimer);
     console.log('\nParando — fechando janelas...');
     await closeAll();
     process.exit(0);
