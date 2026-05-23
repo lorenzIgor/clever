@@ -468,22 +468,26 @@ async function closeAll() {
 }
 
 function launchAt(slot, proxy) {
+  const isLinuxRoot = process.platform === 'linux' && process.getuid && process.getuid() === 0;
+
   return puppeteer.launch({
     headless: false,
-    channel: 'chrome',          // usa o Chrome instalado
-    acceptInsecureCerts: true,  // aceita o cert da CA interna do Caddy
+    channel: 'chrome',
+    acceptInsecureCerts: true,
     defaultViewport: null,
-    protocolTimeout: 60000,     // chamadas CDP não penduram por minutos
-    ignoreDefaultArgs: ['--enable-automation'], // tira a infobar de automação
+    protocolTimeout: 60000,
+    ignoreDefaultArgs: ['--enable-automation'],
     args: [
-      ...(process.platform === 'linux' && process.getuid && process.getuid() === 0 ? ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--disable-gpu-compositing'] : []),
+      ...(isLinuxRoot ? ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--disable-gpu-compositing'] : []),
       '--disable-blink-features=AutomationControlled',
-      `--force-device-scale-factor=${SCALE}`,  // "zoom" global (UI + página)
+      `--force-device-scale-factor=${SCALE}`,
       '--high-dpi-support=1',
       `--window-position=${slot.x},${slot.y}`,
       `--window-size=${slot.w},${slot.h}`,
       ...proxyArgs(proxy),
     ],
+    // userDataDir só em Linux+root (AWS) — Mac/Win usa default do Puppeteer
+    ...(isLinuxRoot ? { userDataDir: `/dev/shm/puppeteer_chrome_profiles/profile-${slot.x}-${slot.y}` } : {}),
   });
 }
 
