@@ -33,6 +33,12 @@ const puppeteer = require('puppeteer');
 const RELOAD_MIN = Number(process.env.RELOAD_MIN_S || 5);
 const RELOAD_MAX = Number(process.env.RELOAD_MAX_S || 10);
 
+// Backend do ANGLE p/ acelerar o Chrome via GPU em cada SO: gl-egl no Linux
+// (Mesa/EGL), metal no macOS, d3d11 no Windows. Combinado com --use-gl=angle.
+const GPU_BACKEND = process.platform === 'linux' ? 'gl-egl'
+                  : process.platform === 'darwin' ? 'metal'
+                  : 'd3d11';
+
 // --- argumentos da linha de comando -----------------------------------------
 // Veja o cabeçalho do arquivo para a lista de flags. Flags ausentes caem nos
 // padrões; o run.py e o watchdog.ps1 repassam tal e qual o que recebem p/ cá.
@@ -479,6 +485,10 @@ function launchAt(slot, proxy) {
       '--disable-blink-features=AutomationControlled',
       `--force-device-scale-factor=${SCALE}`,  // "zoom" global (UI + página)
       '--high-dpi-support=1',
+      '--use-gl=angle',
+      `--use-angle=${GPU_BACKEND}`,
+      '--enable-gpu-rasterization',
+      '--enable-zero-copy',
       `--window-position=${slot.x},${slot.y}`,
       `--window-size=${slot.w},${slot.h}`,
       ...proxyArgs(proxy),
