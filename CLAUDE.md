@@ -91,6 +91,14 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   como root). Equivalente POSIX do `watchdog.ps1`. Mesma lógica: loop infinito
   rodando `python3 run.py`, religa se cair; Ctrl+C encerra junto. Repassa os
   argumentos para o `run.py`. Precisa `chmod +x` uma vez.
+- **`aws-user-data.md`** — script de **User data** do Launch Template das spot
+  instances na AWS (Ubuntu). Sobe Chrome + Caddy + ua-rotate como serviços do
+  systemd, dimensiona `/dev/shm`, ajusta ulimits/sysctls de rede e calcula
+  sozinho `COUNT`/`COLS`/`RES_W`/`RES_H` a partir de `nproc` (fórmula
+  adaptativa calibrada em testes reais). Cria `/dev/shm/puppeteer_chrome_profiles`,
+  que o `ua-rotate.js` usa como `userDataDir` por janela quando detecta
+  Linux+root. Salva a config em `/etc/clever.env`. Copiar/colar no campo
+  *User data* do Launch Template (não vai pra dentro da instância — fica no LT).
 - **`watchdog.ps1`** — watchdog do `run.py` no Windows (PowerShell, só roda
   elevado). Loop infinito: roda `python run.py`, espera ele sair e o relança.
   Funciona porque o `run.py` já encerra sozinho de forma limpa quando um filho
