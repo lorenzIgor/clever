@@ -482,6 +482,7 @@ function launchAt(slot, proxy) {
     protocolTimeout: 60000,     // chamadas CDP não penduram por minutos
     ignoreDefaultArgs: ['--enable-automation'], // tira a infobar de automação
     args: [
+      ...(process.platform === 'linux' && process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
       '--disable-blink-features=AutomationControlled',
       `--force-device-scale-factor=${SCALE}`,  // "zoom" global (UI + página)
       '--high-dpi-support=1',
