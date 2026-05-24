@@ -13,7 +13,10 @@
       "Bash(node -c ua-rotate.js)",
       "Bash(git update-index *)",
       "Bash(chmod +x watchdog.sh)",
-      "Bash(bash -n watchdog.sh)"
+      "Bash(bash -n watchdog.sh)",
+      "Bash(node *)",
+      "Bash(python *)",
+      "Bash(curl *)"
     ]
   }
 }
