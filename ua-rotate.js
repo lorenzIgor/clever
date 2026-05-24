@@ -22,8 +22,12 @@
 //   -scale <f>                  zoom global do Chrome (padrão 0.5 = 50%).
 //   -platform win|mac|linux|all filtra o SO dos perfis DESKTOP (padrão all).
 //   -device desktop|mobile|all  classes de dispositivo a entregar (padrão desktop).
-//   -device_mode random|N:M     proporção desktop:mobile p/ -device all
-//                                (padrão random = 50:50; ex.: 60:40).
+//   -device_mode random|N:M     proporção desktop:mobile FALLBACK p/ -device all
+//                                quando o domínio não traz o 3º elemento em
+//                                domains.json. Padrão 60:40; 'random' = 50:50;
+//                                ex.: 80:20. O split principal é per-domínio
+//                                (3º elemento em domains.json), com variação
+//                                diária ±10% (igual peso/CTR).
 //   -even imps|ctr|all         ignora os valores de domains.json e iguala a
 //                                entrega entre todos os domínios da lista.
 //                                'imps' iguala pesos, 'ctr' iguala CTRs (média
@@ -99,23 +103,27 @@ const DISPLAYS = HAS_DISPLAY_FLAGS
   : DISPLAYS_DEFAULT;
 const WINDOW_COUNT = DISPLAYS.reduce((s, d) => s + d.count, 0);
 
-// Domínios alvo — fonte única em domains.json (objeto `dominio: [peso, ctr]`).
+// Domínios alvo — fonte única em domains.json (objeto `dominio: [peso, ctr, dpct]`).
 // O run.py lê o mesmo arquivo para o hosts e para gerar o Caddyfile.
 //   - peso  = valor relativo do sorteio por ciclo (peso 2 sai o dobro de um
 //             peso 1; a soma é normalizada — escala 0..1, 0..100, tanto faz).
 //             Peso 0 = nunca sorteia (útil para "pausar" sem remover).
 //   - ctr   = taxa de clique em PERCENTUAL, por IMPRESSÃO (0.1 = 0.1% =
 //             1 clique a cada 1000 anúncios renderizados). CTR 0 = nunca clica.
-// Aceita também o formato antigo (só número = só peso, ctr 0).
+//   - dpct  = porcentagem de ciclos DESKTOP daquele domínio (0..100), só vale
+//             com -device all. Mobile = 100 - dpct. Opcional: ausente cai no
+//             fallback global -device_mode (padrão 60). Ex.: 65 = 65% desktop /
+//             35% mobile naquele domínio.
+// Aceita também o formato antigo (só número = só peso, ctr 0, dpct fallback).
 //
 // VARIAÇÃO DIÁRIA: os valores de domains.json são REFERÊNCIA. Todo dia (UTC),
 // cada domínio ganha um fator multiplicativo em [1-VARIATION, 1+VARIATION] —
-// independente para peso e para CTR. Determinístico por (data UTC, domínio,
+// independente para peso, CTR e dpct. Determinístico por (data UTC, domínio,
 // kind): se o spot cair e subir outra vez no mesmo dia, sai exatamente igual,
 // e várias instâncias em paralelo entregam na mesma proporção. Na virada do
 // dia (UTC) o timer em main() chama refreshDailyVariation() e os novos valores
-// passam a valer no próximo ciclo de cada janela (pickDomain/handleImpression
-// leem WEIGHTS/CTRS no momento da chamada).
+// passam a valer no próximo ciclo de cada janela (pickDomain/handleImpression/
+// cycle loop leem WEIGHTS/CTRS/DESKTOP_PCTS no momento da chamada).
 const DOMAINS_CFG = require('./domains.json');
 const DOMAINS = Object.keys(DOMAINS_CFG);
 const BASE_WEIGHTS = DOMAINS.map((d) => {
@@ -125,6 +133,13 @@ const BASE_WEIGHTS = DOMAINS.map((d) => {
 const BASE_CTRS = DOMAINS.reduce((acc, d) => {
   const v = DOMAINS_CFG[d];
   acc[d] = Number(Array.isArray(v) ? v[1] : 0) || 0;
+  return acc;
+}, {});
+// Terceiro elemento opcional (% desktop). null = usa fallback global -device_mode.
+const BASE_DESKTOP_PCTS = DOMAINS.reduce((acc, d) => {
+  const v = DOMAINS_CFG[d];
+  const raw = Array.isArray(v) && v.length >= 3 ? Number(v[2]) : NaN;
+  acc[d] = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : null;
   return acc;
 }, {});
 
@@ -183,10 +198,30 @@ function dailyFactor(dateKey, domain, kind) {
   return 1 + (u * 2 - 1) * VARIATION;
 }
 
+// -device_mode: probabilidade BASE FALLBACK de DESKTOP, usada quando o domínio
+// não traz o 3º elemento (dpct) em domains.json. Padrão 0.6 (60:40); 'random'
+// = 0.5 (50:50); 'N:M' = N/(N+M) (ex.: '80:20' -> 0.8 desktop / 0.2 mobile).
+// Sofre a mesma variação diária ±VARIATION via dailyFactor, per-domínio.
+function desktopProbBase(arg) {
+  if (!arg) return 0.6;                                  // default 60:40
+  if (arg.toLowerCase() === 'random') return 0.5;        // explícito = 50:50
+  const m = /^(\d+)\s*:\s*(\d+)$/.exec(arg);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a + b > 0) return a / (a + b);
+  }
+  console.warn(`-device_mode "${arg}" inválido — usando padrão 60:40`);
+  return 0.6;
+}
+
+const DESKTOP_PROB_BASE = desktopProbBase(flagValue('-device_mode'));
+
 let CURRENT_DAY = null;
 let WEIGHTS = [];
 let WEIGHT_TOTAL = 0;
 let CTRS = {};
+let DESKTOP_PCTS = {}; // domínio -> % desktop efetivo do dia (0..100)
 
 // Recalcula WEIGHTS/WEIGHT_TOTAL/CTRS para a data atual (UTC). Idempotente
 // dentro do mesmo dia. Retorna true se houve troca (incluindo a 1ª chamada),
@@ -202,8 +237,17 @@ function refreshDailyVariation() {
     acc[d] = BASE_CTRS[d] * dailyFactor(day, d, 'c');
     return acc;
   }, {});
+  // % desktop por domínio: base do domains.json (3º elemento) ou fallback global
+  // -device_mode quando ausente. Varia ±VARIATION por (domínio, dia), clipado
+  // em [0,100] pra evitar overflow em bases >91%.
+  const fallbackPct = DESKTOP_PROB_BASE * 100;
+  DESKTOP_PCTS = DOMAINS.reduce((acc, d) => {
+    const base = BASE_DESKTOP_PCTS[d] !== null ? BASE_DESKTOP_PCTS[d] : fallbackPct;
+    acc[d] = Math.max(0, Math.min(100, base * dailyFactor(day, d, 'd')));
+    return acc;
+  }, {});
   const label = prev ? `rollover ${prev} -> ${day}` : `dia ${day}`;
-  console.log(`[daily] ${label} — pesos/CTR variados em ±${Math.round(VARIATION * 100)}% sobre a referência`);
+  console.log(`[daily] ${label} — pesos/CTR/dpct variados em ±${Math.round(VARIATION * 100)}% sobre a referência`);
   return true;
 }
 
@@ -423,22 +467,6 @@ function desktopPool(arg) {
   return DESKTOP_PROFILES;
 }
 
-// -device_mode: probabilidade de um ciclo ser DESKTOP (só vale com -device all).
-// 'random' = 0.5; 'N:M' = N/(N+M)  (ex.: '60:40' -> 0.6 desktop / 0.4 mobile).
-function desktopProb(arg) {
-  if (!arg || arg.toLowerCase() === 'random') return 0.5;
-  const m = /^(\d+)\s*:\s*(\d+)$/.exec(arg);
-  if (m) {
-    const a = Number(m[1]);
-    const b = Number(m[2]);
-    if (a + b > 0) return a / (a + b);
-  }
-  console.warn(`-device_mode "${arg}" inválido — usando random (50:50)`);
-  return 0.5;
-}
-
-const DESKTOP_PROB = desktopProb(flagValue('-device_mode'));
-
 // Pools efetivos por classe: vazios quando a classe não é usada, para o banner
 // e a seleção refletirem exatamente o que vai ao ar.
 const POOLS = {
@@ -605,10 +633,11 @@ async function runWindow(windowIndex) {
   while (!stopping) {
     const domain = pickDomain();
 
-    // classe do ciclo: -device fixa desktop/mobile; 'all' sorteia conforme
-    // -device_mode. Se a classe sorteada não tiver pool, cai na outra.
+    // classe do ciclo: -device fixa desktop/mobile; 'all' sorteia conforme o
+    // % desktop daquele domínio (DESKTOP_PCTS, com variação diária ±10%). Se a
+    // classe sorteada não tiver pool, cai na outra.
     let cls = DEVICE === 'all'
-      ? (Math.random() < DESKTOP_PROB ? 'desktop' : 'mobile')
+      ? (Math.random() * 100 < DESKTOP_PCTS[domain] ? 'desktop' : 'mobile')
       : DEVICE;
     if (cls === 'desktop' && !POOLS.desktop.length) cls = 'mobile';
     if (cls === 'mobile' && !POOLS.mobile.length) cls = 'desktop';
@@ -683,8 +712,16 @@ async function runWindow(windowIndex) {
 }
 
 async function main() {
+  // Média ponderada por peso do % desktop dos domínios sorteáveis (peso > 0).
+  // Reflete o que vai ao ar nesse dia; cada domínio tem seu próprio split.
+  const wTot = WEIGHTS.reduce((a, b) => a + b, 0);
+  const avgPct = wTot > 0
+    ? DOMAINS.reduce((s, d, i) => s + DESKTOP_PCTS[d] * WEIGHTS[i], 0) / wTot
+    : DESKTOP_PROB_BASE * 100;
+  const ratioStr = (pct) => `${Math.round(pct)}:${Math.round(100 - pct)}`;
   const deviceDesc = DEVICE === 'all'
-    ? `desktop+mobile ${Math.round(DESKTOP_PROB * 100)}:${Math.round((1 - DESKTOP_PROB) * 100)}`
+    ? `desktop+mobile per-domínio (média ponderada hoje ${ratioStr(avgPct)},`
+      + ` ±${Math.round(VARIATION * 100)}%/dia; fallback ${ratioStr(DESKTOP_PROB_BASE * 100)})`
     : DEVICE;
   console.log(`ua-rotate: ${WINDOW_COUNT} janelas · ${DOMAINS.length} domínios`
     + (STATIC ? ' · modo STATIC (sem reload — para testar clique)'

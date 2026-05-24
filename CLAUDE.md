@@ -42,15 +42,18 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   Clever entra como primeiro nó dentro do `<body>` (`BODY_OPEN_RE`), flutuante
   (`position:fixed`, 0,0, z-index máximo); o loader vai no fim do `<body>`.
 - **`domains.json`** — fonte única da lista de domínios alvo. Formato: objeto
-  JSON `{"dominio": [peso, ctr]}`. `peso` é o valor relativo do sorteio por
-  ciclo (o `ua-rotate.js` normaliza pela soma — `0..1`, `0..100`, tanto faz);
-  peso `0` pausa o domínio sem removê-lo. `ctr` é a taxa de clique em
+  JSON `{"dominio": [peso, ctr, dpct]}`. `peso` é o valor relativo do sorteio
+  por ciclo (o `ua-rotate.js` normaliza pela soma — `0..1`, `0..100`, tanto
+  faz); peso `0` pausa o domínio sem removê-lo. `ctr` é a taxa de clique em
   **percentual, por impressão** (`0.1` = 0,1% = 1 clique a cada 1000 anúncios
-  renderizados); `0` = nunca clica. **Os valores são REFERÊNCIA** — o
+  renderizados); `0` = nunca clica. `dpct` é a porcentagem de ciclos
+  **desktop** daquele domínio (0..100, só vale com `-device all`); mobile =
+  `100 - dpct`. `dpct` é opcional — ausente cai no fallback global
+  `-device_mode` (padrão 60). **Os valores são REFERÊNCIA** — o
   `ua-rotate.js` aplica um fator multiplicativo em ±10% por dia (UTC) sobre
-  peso e CTR (fatores independentes), determinístico por (data, domínio,
-  kind) via hash; restart no mesmo dia ou várias instâncias paralelas batem
-  igual. Constante `VARIATION` no `ua-rotate.js` controla a amplitude. Na
+  peso, CTR **e dpct** (fatores independentes), determinístico por (data,
+  domínio, kind) via hash; restart no mesmo dia ou várias instâncias
+  paralelas batem igual. Constante `VARIATION` no `ua-rotate.js` controla a amplitude. Na
   virada do dia UTC o timer recalcula e o novo valor passa a valer no
   próximo ciclo de cada janela. **Determinístico e global por domínio** —
   o `ua-rotate.js` mantém um contador único por domínio (`globalCounts`)
@@ -128,7 +131,8 @@ sudo python3 run.py
 sudo ./watchdog.sh                                  # relança sozinho se cair
 sudo python3 run.py static                          # janelas não recarregam (testar clique)
 sudo python3 run.py -platform linux                 # só perfis de UA Linux
-sudo python3 run.py -device all -device_mode 60:40  # entrega desktop+mobile, 60/40
+sudo python3 run.py -device all                     # entrega desktop+mobile (split per-domínio via dpct, ±10%/dia)
+sudo python3 run.py -device all -device_mode 80:20  # fallback p/ domínios sem dpct em domains.json
 sudo python3 run.py -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5  # ajusta o grid da tela
 ```
 
@@ -139,7 +143,8 @@ sudo python3 run.py -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5  # ajusta o gri
 ```powershell
 # Windows — abrir o Terminal/PowerShell COMO ADMINISTRADOR
 python run.py
-python run.py -device all -device_mode 60:40   # entrega desktop+mobile, 60/40
+python run.py -device all                      # entrega desktop+mobile (split per-domínio via dpct, ±10%/dia)
+python run.py -device all -device_mode 80:20   # fallback p/ domínios sem dpct em domains.json
 .\watchdog.ps1            # roda o run.py e o relança sozinho se cair
 .\watchdog.ps1 -w 1920 -h 1080 -cols 4 -count 16 -scale 0.5   # flags repassadas ao run.py
 ```
@@ -156,8 +161,12 @@ ao `ua-rotate.js`):
   (janelas), `-scale <f>` (zoom global). Passar qualquer flag de tela monta uma
   tela única a partir delas; sem flags, usa `DISPLAYS_DEFAULT`.
 - **Agente:** `-platform win|mac|linux|all` (SO dos perfis desktop), `-device
-  desktop|mobile|all` (classes a entregar), `-device_mode random|N:M` (proporção
-  desktop:mobile quando `-device all`, ex.: `60:40`).
+  desktop|mobile|all` (classes a entregar). Com `-device all`, o split
+  desktop:mobile é **per-domínio** pelo 3º elemento (`dpct`) de cada entrada
+  em `domains.json` — sofre a mesma variação diária ±10% dos pesos/CTRs,
+  determinística por (data UTC, domínio). `-device_mode random|N:M` é só
+  FALLBACK para domínios sem o 3º elemento (padrão `60:40`, `random` =
+  `50:50`, ex.: `80:20`). Banner inicial mostra a média ponderada do dia.
 - **Entrega uniforme:** `-even imps|ctr|all` ignora os valores de
   `domains.json` e iguala a entrega entre os domínios da lista. `imps` zera a
   ponderação dos pesos (todos = 1, sorteio uniforme); `ctr` aplica a média
@@ -171,13 +180,15 @@ Sem flags, o padrão é o do `ua-rotate.js` (desktop, 4K, 16 janelas). Também: 
 
 ## Domínios alvo
 
-A lista vive **só em `domains.json`**, no formato `{"dominio": peso}`. O peso
-controla a frequência com que o `ua-rotate.js` visita cada domínio (sorteio
-ponderado por ciclo); todos com peso `1` = uniforme. Para mudar os domínios
-ou os pesos, edite esse arquivo e rode o `run.py` de novo — ele atualiza o
-arquivo hosts e regera o `Caddyfile`; o `ua-rotate.js` lê o `domains.json`
-direto. O `proxy.js` é genérico (resolve qualquer host) e injeta a div no
-início do `<body>` — não precisa de ajuste por site.
+A lista vive **só em `domains.json`**, no formato `{"dominio": [peso, ctr, dpct]}`.
+`peso` controla a frequência com que o `ua-rotate.js` visita cada domínio
+(sorteio ponderado por ciclo); todos com peso `1` = uniforme. `ctr` controla
+a taxa de clique por impressão. `dpct` (opcional) controla o split desktop:mobile
+do domínio com `-device all`. Para mudar os domínios ou os valores, edite
+esse arquivo e rode o `run.py` de novo — ele atualiza o arquivo hosts e
+regera o `Caddyfile`; o `ua-rotate.js` lê o `domains.json` direto. O
+`proxy.js` é genérico (resolve qualquer host) e injeta a div no início do
+`<body>` — não precisa de ajuste por site.
 
 Domínios atrás de proteção anti-bot forte (ex.: Cloudflare) podem não funcionar:
 o proxy busca o site server-side e o Cloudflare bloqueia o fingerprint do Node.

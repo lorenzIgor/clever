@@ -1,14 +1,14 @@
 {
-  "games.op.gg": [160, 0.23],
-  "www.ffonts.net": [15, 0.31],
-  "sport.sky.de": [50, 0.18],
-  "deadspin.com": [2.8, 0.27],
-  "lakersnation.com": [1.2, 0.35],
-  "bloodyelbow.com": [6.7, 0.14],
-  "sport.ch": [3, 0.29],
-  "sport.quotidiano.net": [5, 0.22],
-  "amenteemaravilhosa.com.br": [8, 0.37],
-  "www.fanchants.com": [3, 0.42],
-  "www.fightful.com": [8, 0.26],
-  "www.profootballrumors.com": [5, 0.33]
+  "games.op.gg": [260, 0.23, 65],
+  "www.ffonts.net": [15, 0.31, 54],
+  "sport.sky.de": [50, 0.18, 63],
+  "deadspin.com": [2.8, 0.27, 77],
+  "lakersnation.com": [1.2, 0.35, 59],
+  "bloodyelbow.com": [6.7, 0.14, 64],
+  "sport.ch": [3, 0.29, 60],
+  "sport.quotidiano.net": [5, 0.22, 57],
+  "amenteemaravilhosa.com.br": [8, 0.37, 44],
+  "www.doctorofcredit.com": [18, 0.34, 76],
+  "www.footyheadlines.com": [35, 0.19, 67],
+  "www.fut.gg": [30, 0.27, 63]
 }

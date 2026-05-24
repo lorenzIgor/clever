@@ -13,7 +13,10 @@ lakersnation.com,
 bloodyelbow.com,
 sport.ch,
 sport.quotidiano.net,
-amenteemaravilhosa.com.br {
+amenteemaravilhosa.com.br,
+www.doctorofcredit.com,
+www.footyheadlines.com,
+www.fut.gg {
 	tls internal
 	reverse_proxy 127.0.0.1:8787
 }
