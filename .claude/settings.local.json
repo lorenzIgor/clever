@@ -16,7 +16,8 @@
       "Bash(bash -n watchdog.sh)",
       "Bash(node *)",
       "Bash(python *)",
-      "Bash(curl *)"
+      "Bash(curl *)",
+      "Bash(tasklist)"
     ]
   }
 }
