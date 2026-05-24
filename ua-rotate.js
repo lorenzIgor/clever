@@ -24,6 +24,11 @@
 //   -device desktop|mobile|all  classes de dispositivo a entregar (padrão desktop).
 //   -device_mode random|N:M     proporção desktop:mobile p/ -device all
 //                                (padrão random = 50:50; ex.: 60:40).
+//   -even imps|ctr|all         ignora os valores de domains.json e iguala a
+//                                entrega entre todos os domínios da lista.
+//                                'imps' iguala pesos, 'ctr' iguala CTRs (média
+//                                dos CTRs originais), 'all' faz os dois. A
+//                                variação diária ±10% continua aplicada por cima.
 // Sem flags = comportamento padrão das constantes abaixo (desktop, 4K, 16 janelas).
 //
 // Ajustes por env var (com padrões): RELOAD_MIN_S=5  RELOAD_MAX_S=10
@@ -122,6 +127,28 @@ const BASE_CTRS = DOMAINS.reduce((acc, d) => {
   acc[d] = Number(Array.isArray(v) ? v[1] : 0) || 0;
   return acc;
 }, {});
+
+// -even imps|ctr|all: força entrega uniforme entre os domínios, ignorando os
+// valores de domains.json. 'imps' iguala pesos (todos = 1), 'ctr' iguala CTRs
+// (todos = média dos CTRs originais — preserva o volume agregado de cliques),
+// 'all' faz os dois. Aplicado ANTES da variação diária — a ±10% por dia
+// continua incidindo sobre essa nova base, então mesmo "uniforme" mantém
+// alguma entropia entre dias.
+const EVEN = (() => {
+  const v = flagValue('-even');
+  if (!v) return null;
+  const lower = v.toLowerCase();
+  if (['imps', 'ctr', 'all'].includes(lower)) return lower;
+  console.warn(`-even "${v}" inválido — opções: imps, ctr, all`);
+  return null;
+})();
+if (EVEN === 'imps' || EVEN === 'all') {
+  for (let i = 0; i < BASE_WEIGHTS.length; i++) BASE_WEIGHTS[i] = 1;
+}
+if (EVEN === 'ctr' || EVEN === 'all') {
+  const avg = DOMAINS.reduce((a, d) => a + BASE_CTRS[d], 0) / DOMAINS.length;
+  for (const d of DOMAINS) BASE_CTRS[d] = avg;
+}
 
 const VARIATION = 0.10; // ±10% sobre o valor de referência
 
@@ -661,7 +688,8 @@ async function main() {
     : DEVICE;
   console.log(`ua-rotate: ${WINDOW_COUNT} janelas · ${DOMAINS.length} domínios`
     + (STATIC ? ' · modo STATIC (sem reload — para testar clique)'
-              : ` · reload ${RELOAD_MIN}-${RELOAD_MAX}s, sorteio por peso`));
+              : ` · reload ${RELOAD_MIN}-${RELOAD_MAX}s, sorteio por peso`)
+    + (EVEN ? ` · -even ${EVEN}` : ''));
   console.log('Telas: ' + DISPLAYS.map((d) => `${d.name} ${d.count}j`).join(' · ')
     + ` · zoom ${Math.round(SCALE * 100)}%`);
   console.log(`Agentes: ${deviceDesc}`

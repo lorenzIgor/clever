@@ -158,6 +158,12 @@ ao `ua-rotate.js`):
 - **Agente:** `-platform win|mac|linux|all` (SO dos perfis desktop), `-device
   desktop|mobile|all` (classes a entregar), `-device_mode random|N:M` (proporção
   desktop:mobile quando `-device all`, ex.: `60:40`).
+- **Entrega uniforme:** `-even imps|ctr|all` ignora os valores de
+  `domains.json` e iguala a entrega entre os domínios da lista. `imps` zera a
+  ponderação dos pesos (todos = 1, sorteio uniforme); `ctr` aplica a média
+  dos CTRs originais em todos os domínios (preserva o volume agregado de
+  cliques); `all` faz os dois. A variação diária ±10% continua aplicada por
+  cima, então mesmo `-even` mantém entropia entre dias.
 
 Sem flags, o padrão é o do `ua-rotate.js` (desktop, 4K, 16 janelas). Também: env
 `RELOAD_MIN_S`/`RELOAD_MAX_S` (padrão 5/10s) e, para multi-monitor, a const
