@@ -1,11 +1,14 @@
 {
   "games.op.gg": [260, 0.23],
-  "www.ffonts.net": [10, 0.31],
-  "sport.sky.de": [35, 0.18],
+  "www.ffonts.net": [15, 0.31],
+  "sport.sky.de": [50, 0.18],
   "deadspin.com": [2.8, 0.27],
   "lakersnation.com": [1.2, 0.35],
   "bloodyelbow.com": [6.7, 0.14],
-  "sport.ch": [2, 0.29],
-  "sport.quotidiano.net": [3.5, 0.22],
-  "amenteemaravilhosa.com.br": [5.5, 0.37]
+  "sport.ch": [3, 0.29],
+  "sport.quotidiano.net": [5, 0.22],
+  "amenteemaravilhosa.com.br": [8, 0.37],
+  "www.fanchants.com": [3, 0.42],
+  "www.fightful.com": [8, 0.26],
+  "www.profootballrumors.com": [5, 0.33]
 }
