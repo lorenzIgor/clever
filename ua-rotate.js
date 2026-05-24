@@ -102,18 +102,85 @@ const WINDOW_COUNT = DISPLAYS.reduce((s, d) => s + d.count, 0);
 //   - ctr   = taxa de clique em PERCENTUAL, por IMPRESSÃO (0.1 = 0.1% =
 //             1 clique a cada 1000 anúncios renderizados). CTR 0 = nunca clica.
 // Aceita também o formato antigo (só número = só peso, ctr 0).
+//
+// VARIAÇÃO DIÁRIA: os valores de domains.json são REFERÊNCIA. Todo dia (UTC),
+// cada domínio ganha um fator multiplicativo em [1-VARIATION, 1+VARIATION] —
+// independente para peso e para CTR. Determinístico por (data UTC, domínio,
+// kind): se o spot cair e subir outra vez no mesmo dia, sai exatamente igual,
+// e várias instâncias em paralelo entregam na mesma proporção. Na virada do
+// dia (UTC) o timer em main() chama refreshDailyVariation() e os novos valores
+// passam a valer no próximo ciclo de cada janela (pickDomain/handleImpression
+// leem WEIGHTS/CTRS no momento da chamada).
 const DOMAINS_CFG = require('./domains.json');
 const DOMAINS = Object.keys(DOMAINS_CFG);
-const WEIGHTS = DOMAINS.map((d) => {
+const BASE_WEIGHTS = DOMAINS.map((d) => {
   const v = DOMAINS_CFG[d];
   return Number(Array.isArray(v) ? v[0] : v) || 0;
 });
-const CTRS = DOMAINS.reduce((acc, d) => {
+const BASE_CTRS = DOMAINS.reduce((acc, d) => {
   const v = DOMAINS_CFG[d];
   acc[d] = Number(Array.isArray(v) ? v[1] : 0) || 0;
   return acc;
 }, {});
-const WEIGHT_TOTAL = WEIGHTS.reduce((a, b) => a + b, 0);
+
+const VARIATION = 0.10; // ±10% sobre o valor de referência
+
+// Hash determinístico string -> uint32 (cyrb53 reduzido) — alimenta o fator
+// diário sem precisar de dependência de PRNG semeada.
+function hash32(str) {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  return h1 >>> 0;
+}
+
+// UTC porque o spot da AWS roda em UTC por padrão — rollover acontece no
+// mesmo instante em qualquer instância, sem depender da TZ do SO.
+function todayKey() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Fator em [1-VARIATION, 1+VARIATION] determinístico por (data, domínio, kind).
+// kind = 'w' para peso, 'c' para ctr — fatores independentes na mesma data.
+function dailyFactor(dateKey, domain, kind) {
+  const u = hash32(`${dateKey}|${domain}|${kind}`) / 0xffffffff; // 0..1
+  return 1 + (u * 2 - 1) * VARIATION;
+}
+
+let CURRENT_DAY = null;
+let WEIGHTS = [];
+let WEIGHT_TOTAL = 0;
+let CTRS = {};
+
+// Recalcula WEIGHTS/WEIGHT_TOTAL/CTRS para a data atual (UTC). Idempotente
+// dentro do mesmo dia. Retorna true se houve troca (incluindo a 1ª chamada),
+// false se nada mudou.
+function refreshDailyVariation() {
+  const day = todayKey();
+  if (day === CURRENT_DAY) return false;
+  const prev = CURRENT_DAY;
+  CURRENT_DAY = day;
+  WEIGHTS = DOMAINS.map((d, i) => BASE_WEIGHTS[i] * dailyFactor(day, d, 'w'));
+  WEIGHT_TOTAL = WEIGHTS.reduce((a, b) => a + b, 0);
+  CTRS = DOMAINS.reduce((acc, d) => {
+    acc[d] = BASE_CTRS[d] * dailyFactor(day, d, 'c');
+    return acc;
+  }, {});
+  const label = prev ? `rollover ${prev} -> ${day}` : `dia ${day}`;
+  console.log(`[daily] ${label} — pesos/CTR variados em ±${Math.round(VARIATION * 100)}% sobre a referência`);
+  return true;
+}
+
+refreshDailyVariation();
 if (WEIGHT_TOTAL <= 0) {
   throw new Error('domains.json: soma dos pesos é 0 — nenhum domínio sorteável.');
 }
@@ -621,10 +688,19 @@ async function main() {
     console.log(`[stats] ${parts.join('  ·  ')}`);
   }, STATS_EVERY_MS) : null;
 
+  // Rollover diário: se o processo segurar 24h+ (ex.: spot AWS estável),
+  // checa a cada 60s se virou o dia UTC e recalcula WEIGHTS/CTRS. O novo
+  // valor passa a valer no próximo ciclo de cada janela.
+  const dailyTimer = setInterval(() => {
+    if (stopping) return;
+    refreshDailyVariation();
+  }, 60000);
+
   const shutdown = async () => {
     if (stopping) process.exit(1); // segundo sinal: sai na marra
     stopping = true;
     if (statsTimer) clearInterval(statsTimer);
+    clearInterval(dailyTimer);
     console.log('\nParando — fechando janelas...');
     await closeAll();
     process.exit(0);

@@ -46,7 +46,13 @@ navegador --https--> Caddy (:443, TLS) --http--> proxy.js (:8787) --https--> sit
   ciclo (o `ua-rotate.js` normaliza pela soma — `0..1`, `0..100`, tanto faz);
   peso `0` pausa o domínio sem removê-lo. `ctr` é a taxa de clique em
   **percentual, por impressão** (`0.1` = 0,1% = 1 clique a cada 1000 anúncios
-  renderizados); `0` = nunca clica. **Determinístico e global por domínio** —
+  renderizados); `0` = nunca clica. **Os valores são REFERÊNCIA** — o
+  `ua-rotate.js` aplica um fator multiplicativo em ±10% por dia (UTC) sobre
+  peso e CTR (fatores independentes), determinístico por (data, domínio,
+  kind) via hash; restart no mesmo dia ou várias instâncias paralelas batem
+  igual. Constante `VARIATION` no `ua-rotate.js` controla a amplitude. Na
+  virada do dia UTC o timer recalcula e o novo valor passa a valer no
+  próximo ciclo de cada janela. **Determinístico e global por domínio** —
   o `ua-rotate.js` mantém um contador único por domínio (`globalCounts`)
   somado por TODAS as janelas; ao bater `round(100/ctr)`, a primeira janela
   disponível tenta o clique (mutex `clickingNow` evita duplicata). Reset só
